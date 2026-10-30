@@ -1,0 +1,33 @@
+| Görev | Kategori | Zorluk | Coder 3B (kapalı) | Qwen 4B (kapalı) | Qwen 4B (otomatik) | Qwen 4B (açık) | Qwen 9B (kapalı) | Qwen 9B (otomatik) | Qwen 9B (açık) | Gemma 26B (kapalı) | Gemma 26B (otomatik) | Gemma 26B (açık) | Qwen 27B (kapalı) | Coder 30B (kapalı) | Gemma 12B (otomatik) |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| Türkçe slug | Kod yazma | 11 | 62 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 0 |
+| Roma rakamı | Kod yazma | 4 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 42 |
+| Aralık birleştirme | Kod yazma | 6 | 88 | 100 | 100 | 38 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 |
+| En sık kelimeler | Kod yazma | 23 | 14 | 86 | 86 | 29 | 86 | 86 | 100 | 100 | 100 | 100 | 100 | 86 | 29 |
+| LRU önbellek | Kod yazma | 26 | 100 | 100 | 100 | 33 | 17 | 17 | 17 | 100 | 100 | 100 | 83 | 100 | 100 |
+| İfade hesaplayıcı | Kod yazma | 62 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 100 | 100 | 100 | 100 | 100 | 0 |
+| Süre ayrıştırma (JS) | Kod yazma | 36 | 45 | 45 | 45 | 0 | 82 | 82 | 0 | 100 | 100 | 100 | 45 | 91 | 100 |
+| İkili arama | Hata ayıklama | 8 | 0 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 |
+| Değişken varsayılan argüman | Hata ayıklama | 0 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 |
+| Parçalara bölme | Hata ayıklama | 0 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 |
+| Alışveriş sepeti | Hata ayıklama | 0 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 |
+| Liste takma adları | Kod okuma | 54 | 0 | 0 | 0 | 0 | 0 | 100 | 0 | 100 | 100 | 100 | 100 | 0 | 100 |
+| Kapanış (closure) | Kod okuma | 23 | 0 | 0 | 100 | 100 | 0 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 |
+| Sıralama anahtarı | Kod okuma | 54 | 0 | 0 | 0 | 100 | 0 | 100 | 100 | 0 | 100 | 100 | 0 | 0 | 100 |
+| Bölme ve yuvarlama | Kod okuma | 38 | 0 | 0 | 100 | 0 | 0 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 0 |
+| Üreteç ve finally | Kod okuma | 23 | 100 | 100 | 100 | 0 | 100 | 0 | 0 | 100 | 100 | 100 | 100 | 100 | 100 |
+| Olay döngüsü (JS) | Kod okuma | 54 | 0 | 0 | 0 | 0 | 0 | 100 | 100 | 0 | 100 | 100 | 100 | 0 | 100 |
+| Gruplama | SQL | 0 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 |
+| Join ve toplam | SQL | 0 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 |
+| Eksik kayıtlar | SQL | 0 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 |
+| Grup içi en büyük | SQL | 31 | 0 | 0 | 0 | 100 | 100 | 100 | 0 | 100 | 100 | 100 | 100 | 100 | 100 |
+| Dosya sayma | Terminal | 8 | 0 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 |
+| Satır arama | Terminal | 46 | 0 | 0 | 0 | 0 | 0 | 0 | 100 | 100 | 100 | 100 | 100 | 100 | 100 |
+| En büyük dosya | Terminal | 31 | 100 | 0 | 0 | 0 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 0 |
+| CSV toplamı | Terminal | 54 | 0 | 0 | 0 | 0 | 0 | 0 | 100 | 100 | 100 | 100 | 100 | 100 | 0 |
+| Dosya taşıma | Terminal | 31 | 100 | 0 | 0 | 0 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 0 | 100 |
+| Toplu uzantı değiştirme | Terminal | 25 | 75 | 0 | 0 | 0 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 |
+| CSV hesaplayıp dosyaya yazma | Ajan (araçlar) | 15 | 0 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 0 |
+| Testleri geçirme | Ajan (araçlar) | 15 | 0 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 100 | 0 |
+| Kod tabanında arama | Ajan (araçlar) | 54 | 0 | 100 | 100 | 0 | 0 | 0 | 0 | 100 | 100 | 0 | 100 | 100 | 0 |
+| İki dosyada düzenleme | Ajan (araçlar) | 19 | 0 | 100 | 100 | 0 | 100 | 100 | 100 | 100 | 100 | 50 | 100 | 100 | 100 |

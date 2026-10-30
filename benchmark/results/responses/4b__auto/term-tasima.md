@@ -1,0 +1,39 @@
+# term-tasima · puan 0.00
+
+**Not:** archive klasörüne dosya taşınmamış
+
+## Prompt
+
+Windows'ta PowerShell 7 (pwsh) kullanıyorum. Bulunduğum klasörün yapısı şöyle:
+```text
+.
+├── logs
+│   ├── app1.log
+│   ├── app2.log
+│   └── old
+│       └── app0.log
+├── data
+│   ├── notes.txt
+│   ├── todo.txt
+│   ├── report.csv
+│   ├── big.bin
+│   └── image.png
+└── readme.md
+```
+data/report.csv dosyasının ilk satırı: date,product,amount
+
+Görev: archive adında bir klasör oluştur ve logs klasörünün doğrudan içindeki .log dosyalarını (alt klasördekiler hariç) bu klasöre taşı.
+
+Bu işi bulunduğum klasörde yapan PowerShell komutunu yaz (tek satır; gerekirse komutları ; ile birleştir). Sadece komutu tek bir ```powershell bloğu içinde ver.
+
+## Cevap
+
+```powershell
+New-Item -ItemType Directory -Path .\archive | ForEach-Object { Move-Item -Path ".\logs\$($_)" -Destination ".\archive\" } 2>$null; Get-ChildItem .\logs -Filter "*.log" -Directory | ForEach-Object { Move-Item -Path "$($_)\*.log" -Destination ".\archive\" }
+```
+
+## Notlandırılan kod/komut
+
+```
+New-Item -ItemType Directory -Path .\archive | ForEach-Object { Move-Item -Path ".\logs\$($_)" -Destination ".\archive\" } 2>$null; Get-ChildItem .\logs -Filter "*.log" -Directory | ForEach-Object { Move-Item -Path "$($_)\*.log" -Destination ".\archive\" }
+```
