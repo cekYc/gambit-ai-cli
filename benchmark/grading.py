@@ -80,7 +80,7 @@ def shell_safety(cmd: str, sandbox: Path) -> str | None:
 
 
 def _env() -> dict:
-    return dict(os.environ, PYTHONUTF8="1", PYTHONIOENCODING="utf-8", PYTHONDONTWRITEBYTECODE="1")
+    return dict(os.environ, PYTHONUTF8="1", PYTHONIOENCODING="utf-8", PYTHONDONTWRITEBYTECODE="1", PYTHONHASHSEED="0")
 
 
 def run(cmd: list[str], cwd: Path | str, timeout: float) -> tuple[int, str, str, bool]:

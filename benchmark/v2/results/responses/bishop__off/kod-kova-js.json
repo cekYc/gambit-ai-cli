@@ -1,0 +1,144 @@
+{
+ "result": {
+  "preset": "bishop",
+  "model_id": "gemma-4-12b-coder-fable5-composer2.5-v1",
+  "mode": "off",
+  "task": "kod-kova-js",
+  "category": "Kod yazma",
+  "level": 3,
+  "weight": 3.0,
+  "score": 0.0,
+  "detail": "dosyaya kaydedilmemiş; cevaptaki kod kullanıldı ×0.6 | eksik: dolu başlar, boşalır; kesirli dolum; kapasitede durur; başarısız tryTake jeton düşmez; saat geri gidince; msUntil; msUntil 0; msUntil yukarı yuvarlar; Infinity durumları; kesirli n; throws(() => new TokenBucket({ capacity: 0, refillPerSecond: 1 }), RangeError); throws(() => new TokenBucket({ capacity: 3, refillPerSecond: -1 }), RangeError); throws(() => new TokenBucket({ capacity: \"3\", refillPerSecond: 1 }), RangeError); throws(() => new TokenBucket({ capacity: 3, refillPerSecond: 1 }).tryTake(0), RangeError); throws(() => new Token",
+  "notes": "",
+  "items": [
+   [
+    "dolu başlar, boşalır",
+    1,
+    0.0,
+    ""
+   ],
+   [
+    "kesirli dolum",
+    1.5,
+    0.0,
+    ""
+   ],
+   [
+    "kapasitede durur",
+    1,
+    0.0,
+    ""
+   ],
+   [
+    "başarısız tryTake jeton düşmez",
+    1.5,
+    0.0,
+    ""
+   ],
+   [
+    "saat geri gidince",
+    1,
+    0.0,
+    ""
+   ],
+   [
+    "msUntil",
+    1,
+    0.0,
+    ""
+   ],
+   [
+    "msUntil 0",
+    0.5,
+    0.0,
+    ""
+   ],
+   [
+    "msUntil yukarı yuvarlar",
+    1,
+    0.0,
+    ""
+   ],
+   [
+    "Infinity durumları",
+    1,
+    0.0,
+    ""
+   ],
+   [
+    "kesirli n",
+    0.5,
+    0.0,
+    ""
+   ],
+   [
+    "throws(() => new TokenBucket({ capacity: 0, refillPerSecond: 1 }), RangeError)",
+    0.5,
+    0.0,
+    ""
+   ],
+   [
+    "throws(() => new TokenBucket({ capacity: 3, refillPerSecond: -1 }), RangeError)",
+    0.5,
+    0.0,
+    ""
+   ],
+   [
+    "throws(() => new TokenBucket({ capacity: \"3\", refillPerSecond: 1 }), RangeError)",
+    0.5,
+    0.0,
+    ""
+   ],
+   [
+    "throws(() => new TokenBucket({ capacity: 3, refillPerSecond: 1 }).tryTake(0), RangeError)",
+    0.5,
+    0.0,
+    ""
+   ],
+   [
+    "throws(() => new TokenBucket({ capacity: 3, refillPerSecond: 1 }).msUntil(-2), RangeError)",
+    0.5,
+    0.0,
+    ""
+   ],
+   [
+    "varsayılan saat",
+    0.5,
+    0.0,
+    ""
+   ],
+   [
+    "kodu kendisi doğruladı",
+    0.6,
+    0.0,
+    ""
+   ]
+  ],
+  "wall": 101.0,
+  "tokens": 811,
+  "prompt_tokens": 1597,
+  "calls": 1,
+  "think_calls": 0,
+  "tool_calls": 0,
+  "timed_out": false,
+  "server_error": "",
+  "crash": "",
+  "time": "2026-11-01T09:45:18"
+ },
+ "final": "```javascript\n/**\n * TokenBucket implementasyonu (Node.js).\n */\n\nlet lastRefillTime; // Jeton dolum hesabı için kullanılan en büyük zaman referansı\n\nfunction now() {\n  return Date.now();\n}\n\nclass TokenBucket {\n  /**\n   * @param {Object} options - Konfigürasyon nesnesi.\n   */\n  constructor({ capacity, refillPerSecond, now = () => Date.now() }) {\n    if (!Number.isFinite(capacity) || capacity <= 0) {\n      throw new RangeError('Capacity must be a positive finite number');\n    }\n    if (typeof refillPerSecond !== 'number' || refillPerSecond < 0) {\n      throw new RangeError('refillPersecond must be a non-negative number');\n    }\n\n    this._now = now;\n    this.capacity = capacity;\n    this.refillRate = refillPerSecond; // jeton/saniye (ms cinsinden: refilled per ms)\n    this.tokens = capacity;\n    this.maxSeenTime = Date.now(); // ilk çalışma için varsayılan zaman\n  }\n\n  /**\n   * Jetonleri zamana bağlı olarak doldurur.\n   */\n  _refill() {\n    const currentNow = this._now();\n    let refillDuration;\n\n    if (this.maxSeenTime === undefined) {\n      // İlk çalışma durumu: kova dolu başlar, bu yüzden refilling yapılmaz\n      this.maxSeenTime = currentNow;\n    } else if (currentNow > this.maxSeenTime) {\n      refillDuration = currentNow - this.maxSeenTime;\n      this.maxSeenTime = currentNow;\n    } else {\n      // Geriye doğru giden zamanlarda jeton eklenmez / çıkarılmaz\n      return;\n    }\n\n    const refilledTokens = refillDuration * (this.refillRate / 1000); // ms cinsından saniye dönüşümü ile jeton miktarı\n    this.tokens = Math.min(this.capacity, this.tokens + refilledTokens);\n  }\n\n  /**\n   * n adet jetonu kullanmaya çalışır.\n   */\n  tryTake(n) {\n    if (!Number.isFinite(n) || n <= 0) {\n      throw new RangeError('Amount must be a positive finite number');\n    }\n    this._refill();\n    return this.tokens >= n && (this.tokens -= n); // Jeton yeterliyse düş ve true döndür\n  });\n\n  /**\n   * Mevcut jeton sayısını döner.\n   */\n  available() {\n    this._refill();\n    return this.tokens;\n  }\n\n  /**\n   * n adet jetonun kullanılabilir olmasına kalan süreyi ms cinsinden döndür.\n   */\n  msUntil(n) {\n    if (!Number.isFinite(n) || n <= 0) {\n      throw new RangeError('Amount must be a positive finite number');\n    }\n\n    const currentTokens = this.available();\n\n    if (currentTokens >= n) return 0;\n\n    // Dolum hızı 1 saniyedeki jeton sayısıdır\n    if (this.refillRate <= 0 || n > this.capacity) return Infinity;\n\n    const needed = n - currentTokens;\n    return Math.ceil((needed / this.refillRate) * 1000); // kaç sn kaldığını ms cinsinden yukarı yuvarla\n  }\n}\n\nmodule.exports = { TokenBucket };\n```",
+ "events": [],
+ "messages": [
+  {
+   "role": "system",
+   "content": "You are Gambit, a helpful assistant running in the user's terminal, powered by a local model. Your current mode is 'bishop'. If asked who or what you are, introduce yourself by that name; do not name the underlying model or its maker.\nCurrent directory: C:\\AI\\benchmark\\v2\\results\\sandboxes\\bishop__off\\kod-kova-js\nOS: Windows 11 | Date: 2026-11-01\nAlways reply in the language the user writes in (usually Turkish). Be concise and practical.\nYou have tools to list, read, search, create and edit files and to run shell commands (PowerShell).\nUse them whenever you need real information; never invent file contents or command output.\nRelative paths are relative to the current directory.\nRead a file before editing it. Use edit_file for small changes, write_file for new files or full rewrites.\nWhen the user asks you to write or create a program, script or file, save it with write_file; do not paste the whole file into the chat instead. If they also ask you to run it, run it with run_command.\nNever say that you created a file, ran a command or verified something unless a tool result in this conversation confirms it.\nwrite_file, edit_file and run_command ask the user for approval. If the user rejects, follow their note or ask what they want instead.\nAfter writing or changing code you MUST verify it yourself with run_command before finishing; never ask the user to run it for you. Syntax-check it (python -m py_compile file.py, node --check file.js), run its tests, or exercise it with a short one-off script (for a web app, call it through its test client, e.g. Flask's app.test_client()). If the check fails, fix the code and check again. Briefly tell the user what you verified.\nNever run commands that do not finish on their own (web servers, watchers, interactive programs that wait for keyboard input); they hang until the timeout. Check those another way (syntax check, a short script that imports and tests the logic) and tell the user the command to start them themselves.\nNever remove or weaken a requested feature just to make a check pass (for example deleting input() calls so a game exits cleanly). If something cannot be verified here, keep it and say so honestly."
+  },
+  {
+   "role": "user",
+   "content": "JavaScript'te (Node.js) bir `TokenBucket` sınıfı yaz:\n- `new TokenBucket({ capacity, refillPerSecond, now })`: `now` isteğe bağlı, milisaniye döndüren bir\n  fonksiyondur (varsayılan `Date.now`); testler sahte saat verir. Kova dolu başlar.\n- Jetonlar zamanla sürekli (kesirli olarak) dolar: geçen her saniye için `refillPerSecond` jeton, en fazla\n  `capacity`'ye kadar. Saat geri giderse jeton eklenmez/çıkarılmaz; dolum hesabında o ana kadar görülen\n  en büyük zaman referans kalır.\n- `tryTake(n = 1)`: yeterli jeton varsa n jetonu düşer ve true döner; yoksa hiçbir şey düşmeden false.\n- `available()`: o anki jeton sayısı (kesirli olabilir).\n- `msUntil(n = 1)`: n jetonun kullanılabilir olmasına kaç ms kaldığı (yukarı yuvarlanmış tam sayı; şimdi\n  yeterliyse 0). n > capacity ya da dolum hızı 0 iken jeton yetmiyorsa `Infinity`.\n- Geçersiz değerlerde `RangeError` fırlat: capacity pozitif sonlu sayı değilse, refillPerSecond negatif ya da\n  sayı değilse; tryTake/msUntil için n pozitif sonlu sayı değilse.\n`module.exports = { TokenBucket };` ile dışa aktar.\nKodu `kova.js` dosyasına yaz (bu klasörde, Node.js CommonJS: `module.exports`). Harici paket kullanma. Çözümün gizli testlerle (kenar durumları dahil) puanlanacak."
+  },
+  {
+   "role": "assistant",
+   "content": "```javascript\n/**\n * TokenBucket implementasyonu (Node.js).\n */\n\nlet lastRefillTime; // Jeton dolum hesabı için kullanılan en büyük zaman referansı\n\nfunction now() {\n  return Date.now();\n}\n\nclass TokenBucket {\n  /**\n   * @param {Object} options - Konfigürasyon nesnesi.\n   */\n  constructor({ capacity, refillPerSecond, now = () => Date.now() }) {\n    if (!Number.isFinite(capacity) || capacity <= 0) {\n      throw new RangeError('Capacity must be a positive finite number');\n    }\n    if (typeof refillPerSecond !== 'number' || refillPerSecond < 0) {\n      throw new RangeError('refillPersecond must be a non-negative number');\n    }\n\n    this._now = now;\n    this.capacity = capacity;\n    this.refillRate = refillPerSecond; // jeton/saniye (ms cinsinden: refilled per ms)\n    this.tokens = capacity;\n    this.maxSeenTime = Date.now(); // ilk çalışma için varsayılan zaman\n  }\n\n  /**\n   * Jetonleri zamana bağlı olarak doldurur.\n   */\n  _refill() {\n    const currentNow = this._now();\n    let refillDuration;\n\n    if (this.maxSeenTime === undefined) {\n      // İlk çalışma durumu: kova dolu başlar, bu yüzden refilling yapılmaz\n      this.maxSeenTime = currentNow;\n    } else if (currentNow > this.maxSeenTime) {\n      refillDuration = currentNow - this.maxSeenTime;\n      this.maxSeenTime = currentNow;\n    } else {\n      // Geriye doğru giden zamanlarda jeton eklenmez / çıkarılmaz\n      return;\n    }\n\n    const refilledTokens = refillDuration * (this.refillRate / 1000); // ms cinsından saniye dönüşümü ile jeton miktarı\n    this.tokens = Math.min(this.capacity, this.tokens + refilledTokens);\n  }\n\n  /**\n   * n adet jetonu kullanmaya çalışır.\n   */\n  tryTake(n) {\n    if (!Number.isFinite(n) || n <= 0) {\n      throw new RangeError('Amount must be a positive finite number');\n    }\n    this._refill();\n    return this.tokens >= n && (this.tokens -= n); // Jeton yeterliyse düş ve true döndür\n  });\n\n  /**\n   * Mevcut jeton sayısını döner.\n   */\n  available() {\n    this._refill();\n    return this.tokens;\n  }\n\n  /**\n   * n adet jetonun kullanılabilir olmasına kalan süreyi ms cinsinden döndür.\n   */\n  msUntil(n) {\n    if (!Number.isFinite(n) || n <= 0) {\n      throw new RangeError('Amount must be a positive finite number');\n    }\n\n    const currentTokens = this.available();\n\n    if (currentTokens >= n) return 0;\n\n    // Dolum hızı 1 saniyedeki jeton sayısıdır\n    if (this.refillRate <= 0 || n > this.capacity) return Infinity;\n\n    const needed = n - currentTokens;\n    return Math.ceil((needed / this.refillRate) * 1000); // kaç sn kaldığını ms cinsinden yukarı yuvarla\n  }\n}\n\nmodule.exports = { TokenBucket };\n```"
+  }
+ ]
+}
