@@ -89,39 +89,25 @@ def policy(name: str, args: dict, sandbox: Path) -> str | None:
     if name in ("write_file", "edit_file"):
         path = cli_tools._path(str(args.get("path", "")))
         return None if path.is_relative_to(sandbox.resolve()) else f"klasör dışına yazma: {path}"
-    if name == "run_command":
-        cmd = str(args.get("command", ""))
+    if name in ("run_command", "run_python"):
+        # run_python'a giden Python kodu da python -c ile çalıştırılan kodla aynı kurallardan geçer
+        cmd = str(args.get("command" if name == "run_command" else "code", ""))
         # koddaki kaçışlı ters bölüler ('\\n') ağ yolu sanılmasın; yalnızca gerçek \\sunucu\paylaşım yolları engellenir
         checked = re.sub(r"\\\\(?![\w.-]+\\[\w$.-]+)", "/", cmd)
         # "~3", "~200ms" gibi yaklaşık değerler ev klasörü sanılmasın; yalnızca ~, ~/ ve ~\ ev yoludur
         checked = re.sub(r"~(?![\\/\s'\"]|$)", "≈", checked)
+        if name == "run_python":
+            # Python kodundaki "net", "reg", "kill" gibi kelimeler kabuk komutu değildir (ör. "Net satış" yorumu);
+            # Python için tehlikeli olan subprocess, os.system, shutil... python_danger'da, yol kuralları aşağıda
+            checked = grading.SHELL_DENY.sub("_", checked)
         return grading.shell_safety(checked, sandbox) or grading.python_danger(cmd)
     return None
 
 
-def run_command_tree(command: str, timeout: int = 120, deadline: float | None = None) -> str:
-    """gambit'in run_command'ının aynısı; tek fark: zaman aşımında yalnızca kabuk değil süreç ağacının tamamı kapatılır
-    (yoksa sonsuz döngüdeki python süreçleri arkada kalıp makineyi yavaşlatıyor). Süre görev bütçesiyle sınırlanır."""
+def capped_timeout(timeout, deadline: float | None) -> int:
+    """Komut süresi görevin kalan süresiyle sınırlanır (gambit zaman aşımında süreç ağacının tamamını kapatır)."""
     timeout = min(max(int(timeout), 1), 600)
-    if deadline is not None:
-        timeout = max(5, min(timeout, int(deadline - time.perf_counter())))
-    p = subprocess.Popen(cli_tools._shell_args(command), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                         stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
-    try:
-        out, err = p.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        subprocess.run(["taskkill", "/T", "/F", "/PID", str(p.pid)], capture_output=True)
-        try:
-            p.communicate(timeout=10)
-        except subprocess.TimeoutExpired:
-            pass
-        raise cli_tools.ToolError(f"komut {timeout} saniyede bitmedi ve durduruldu")
-    parts = [f"çıkış kodu: {p.returncode}"]
-    if out.strip():
-        parts.append(out.strip())
-    if err.strip():
-        parts.append("[stderr]\n" + err.strip())
-    return "\n".join(parts)
+    return timeout if deadline is None else max(5, min(timeout, int(deadline - time.perf_counter())))
 
 
 class _Guard:
@@ -203,27 +189,17 @@ class GambitBench(ai.Chat):
                 result = "Hata: bu ortamda yalnızca çalışma klasörünün içi okunabilir."
                 self.events.append({"name": name, "args": args, "result": result, "t": t})
                 return result
-        tool = cli_tools.TOOLS.get("run_command")
-        original = tool.run
-        tool.run = lambda command, timeout=120: run_command_tree(command, timeout, self.deadline)
+        originals = {n: cli_tools.TOOLS[n].run for n in ("run_command", "run_python")}
+        for n, run in originals.items():
+            cli_tools.TOOLS[n].run = (lambda run: lambda *a, timeout=120, **kw:
+                                      run(*a, timeout=capped_timeout(timeout, self.deadline), **kw))(run)
         try:
             result = super()._run_tool(call)
         finally:
-            tool.run = original
+            for n, run in originals.items():
+                cli_tools.TOOLS[n].run = run
         self.events.append({"name": name, "args": _clip_args(args), "result": result[:3000], "t": t})
         return result
-
-    def _save_assistant(self, text, tool_calls):
-        # Bozuk JSON argümanlı araç çağrısı geçmişe olduğu gibi yazılırsa LM Studio sonraki istekte 500 veriyor
-        # (gambit-cli hatası). Araç yine bozuk argümanla çalıştırılıp modele hata döner; geçmişe "{}" yazılır.
-        clean = []
-        for c in tool_calls:
-            try:
-                json.loads(c["function"]["arguments"] or "{}")
-                clean.append(c)
-            except ValueError:
-                clean.append({**c, "function": {**c["function"], "arguments": "{}"}})
-        super()._save_assistant(text, clean)
 
     def _approve(self, name):
         try:

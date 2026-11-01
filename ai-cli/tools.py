@@ -2,10 +2,14 @@
 
 import difflib
 import fnmatch
+import json
 import os
 import re
 import shutil
+import signal
 import subprocess
+import sys
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -16,8 +20,10 @@ MAX_ENTRIES = 500
 SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", ".mypy_cache", ".pytest_cache", "dist", "build"}
 CODE_EXTS = {".py", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".ps1", ".sh", ".go", ".rs", ".java", ".c", ".cpp",
              ".cs", ".php", ".rb"}
-CHECK_COMMANDS = {".py": 'python -m py_compile "{p}"', ".js": 'node --check "{p}"', ".mjs": 'node --check "{p}"',
-                  ".cjs": 'node --check "{p}"'}
+LINE_PREFIX = re.compile(r"^ *\d+→")  # read_file'ın eklediği satır numarası; modeller bazen old_text'e kopyalıyor
+STDERR_WARNING = "ancak stderr'de hata mesajı var"
+UNDO: list[tuple[Path, bytes | None]] = []  # yazma araçlarından önceki hâller (/undo için); None: dosya yoktu
+UNDO_LIMIT = 50
 
 
 class ToolError(Exception):
@@ -38,7 +44,8 @@ class Tool:
 def truncate(text: str, limit: int = MAX_OUTPUT) -> str:
     if len(text) <= limit:
         return text
-    return text[:limit] + f"\n... [kesildi, {len(text) - limit} karakter daha var]"
+    return (text[:limit] + f"\n... [kesildi: {len(text) - limit} karakter daha var; dosyaysa read_file ile start_line/"
+            "max_lines vererek parça parça oku, komutsa çıktıyı daralt]")
 
 
 def _path(path: str) -> Path:
@@ -71,6 +78,24 @@ def _read_raw(p: Path, strict: bool = False) -> str:
         raise ToolError(f"dosya UTF-8 değil, bozulmaması için düzenlenmedi: {p}")
 
 
+def _remember(p: Path) -> None:
+    """Dosyanın yazılmadan önceki hâlini /undo için saklar."""
+    UNDO.append((p, p.read_bytes() if p.is_file() else None))
+    del UNDO[:-UNDO_LIMIT]
+
+
+def undo_last() -> str | None:
+    """Araçların yaptığı son dosya değişikliğini geri alır; geri alınacak bir şey yoksa None."""
+    if not UNDO:
+        return None
+    p, old = UNDO.pop()
+    if old is None:
+        p.unlink(missing_ok=True)
+        return f"silindi (araçla oluşturulmuştu): {p}"
+    p.write_bytes(old)
+    return f"eski hâline döndü: {p}"
+
+
 def _write(p: Path, text: str, crlf: bool) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
     text = text.replace("\r\n", "\n")
@@ -85,15 +110,164 @@ def _diff(p: Path, old: str, new: str) -> str:
     return "\n".join(lines) or "(değişiklik yok)"
 
 
-def _verify_hint(p: Path) -> str:
-    """Kod dosyası yazıldıysa modele doğrulama hatırlatması (küçük modeller sistem mesajındaki kuralı unutuyor)."""
+def _numbered(lines: list[str], start: int) -> str:
+    return "\n".join(f"{i:>5}→{line}" for i, line in enumerate(lines, start))
+
+
+# --- süreç çalıştırma ---
+
+def _find_shell() -> tuple[list[str], str]:
+    if os.name != "nt":
+        return ["/bin/sh", "-c"], "sh"
+    for exe, name in (("pwsh", "PowerShell 7"), ("powershell", "Windows PowerShell 5.1")):
+        if path := shutil.which(exe):
+            return [path, "-NoProfile", "-NonInteractive", "-Command"], name
+    return ["cmd", "/c"], "cmd"
+
+
+SHELL, SHELL_NAME = _find_shell()
+POWERSHELL = "PowerShell" in SHELL_NAME
+_PS_PRELUDE = ("[Console]::OutputEncoding = [Text.Encoding]::UTF8; $OutputEncoding = [Text.Encoding]::UTF8; "
+               "$ProgressPreference = 'SilentlyContinue'; ")
+if SHELL_NAME.endswith("5.1"):
+    # Windows PowerShell 5.1'de > ve Out-File varsayılan olarak UTF-16 yazıyor; diğer araçlar okuyamıyor
+    _PS_PRELUDE += ("$PSDefaultParameterValues['Out-File:Encoding'] = 'utf8'; "
+                    "$PSDefaultParameterValues['Set-Content:Encoding'] = 'utf8'; "
+                    "$PSDefaultParameterValues['Add-Content:Encoding'] = 'utf8'; ")
+
+
+def _shell_args(command: str) -> list[str]:
+    return [*SHELL, _PS_PRELUDE + command if POWERSHELL else command]
+
+
+def _python_exe() -> str:
+    for name in ("python", "python3", "py"):
+        path = shutil.which(name)
+        if path and "WindowsApps" not in path:  # Microsoft Store kısayolu Python değil, mağazayı açar
+            return path
+    return sys.executable
+
+
+def environment() -> tuple[list[str], list[str]]:
+    """Komut satırından kullanılabilen ve kurulu olmayan yaygın programlar."""
+    def found(name: str) -> bool:
+        if name == "python":
+            return any((p := shutil.which(n)) and "WindowsApps" not in p for n in ("python", "python3", "py"))
+        return bool(shutil.which(name))
+
+    names = ["python", "node", "npm", "git", "sqlite3"]
+    have = [n for n in names if found(n)]
+    return have, [n for n in names if n not in have]
+
+
+def _kill_tree(p: subprocess.Popen) -> None:
+    """Süreci başlattığı alt süreçlerle birlikte kapatır (yalnızca kabuğu kapatmak sonsuz döngüleri arkada bırakır)."""
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(p.pid)], capture_output=True)
+    else:
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except OSError:
+            p.kill()
+    try:
+        p.communicate(timeout=10)
+    except (subprocess.TimeoutExpired, ValueError, OSError):
+        pass
+
+
+def _run_process(argv: list[str], timeout: int, stdin_text: str | None = None,
+                 env: dict | None = None) -> tuple[int, str, str]:
+    p = subprocess.Popen(argv, stdin=subprocess.DEVNULL if stdin_text is None else subprocess.PIPE,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
+                         env=env, start_new_session=os.name != "nt")
+    try:
+        out, err = p.communicate(stdin_text, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_tree(p)
+        raise ToolError(f"komut {timeout} saniyede bitmedi; komut ve başlattığı tüm süreçler durduruldu "
+                        "(sonsuz döngü ya da girdi bekleyen bir program olabilir)")
+    except KeyboardInterrupt:
+        _kill_tree(p)
+        raise
+    return p.returncode, out, err
+
+
+def _result(code: int, out: str, err: str, shell: bool) -> str:
+    head = f"çıkış kodu: {code}"
+    if code == 0 and err.strip() and shell and POWERSHELL:
+        # PowerShell çoğu hatada komutu sürdürüp 0 ile çıkıyor; model başarılı sanmasın
+        head += f" ({STDERR_WARNING}; PowerShell bazı hatalarda çıkış kodunu değiştirmez)"
+    parts = [head]
+    if out.strip():
+        parts.append(out.strip())
+    if err.strip():
+        parts.append("[stderr]\n" + err.strip())
+    return "\n".join(parts)
+
+
+def _timeout(timeout) -> int:
+    return min(max(int(timeout), 1), 600)
+
+
+def run_command(command: str, timeout: int = 120) -> str:
+    code, out, err = _run_process(_shell_args(command), _timeout(timeout))
+    return _result(code, out, err, shell=True)
+
+
+def run_python(code: str, timeout: int = 120) -> str:
+    # Kod stdin'den verilir: kabuk tırnaklama sorunu yok, geçici dosya yok ve bulunduğun klasördeki modüller içe aktarılabilir
+    env = dict(os.environ, PYTHONUTF8="1", PYTHONIOENCODING="utf-8")
+    rc, out, err = _run_process([_python_exe(), "-"], _timeout(timeout), stdin_text=code, env=env)
+    return _result(rc, out, err, shell=False)
+
+
+# --- yazmadan sonra denetim ---
+
+def _syntax_check(p: Path, text: str) -> str | None:
+    """Sözdizimi hatasının açıklaması; sorun yoksa "", bu dosya türü denetlenemiyorsa None."""
     ext = p.suffix.lower()
-    if ext not in CODE_EXTS:
+    if ext == ".py":
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            try:
+                compile(text, str(p), "exec", dont_inherit=True)
+            except SyntaxError as e:
+                where = f"satır {e.lineno}" + (f", sütun {e.offset}" if e.offset else "")
+                return f"{e.msg} ({where})" + (f": {e.text.strip()}" if e.text and e.text.strip() else "")
+            except ValueError as e:
+                return str(e)
         return ""
-    check = CHECK_COMMANDS.get(ext)
-    example = f" (e.g. {check.format(p=p)})" if check else ""
-    return (f"\nNext step: before finishing, verify this code yourself with run_command{example}, and run its tests "
-            "if it has any. Do not ask the user to run it. Do not start servers or other commands that never finish.")
+    if ext == ".json":
+        try:
+            json.loads(text)
+        except ValueError as e:
+            return str(e)
+        return ""
+    if ext in (".js", ".mjs", ".cjs") and (node := shutil.which("node")):
+        try:
+            code, out, err = _run_process([node, "--check", str(p)], 20)
+        except ToolError:
+            return None
+        if code == 0:
+            return ""
+        lines = [line for line in (err or out).strip().splitlines() if line.strip()]
+        return "\n".join(lines[:8])
+    return None
+
+
+def _after_write(p: Path, text: str) -> str:
+    """Kod dosyası yazıldıysa sözdizimi denetiminin sonucu ve doğrulama hatırlatması (küçük modeller sistem mesajındaki
+    kuralı unutuyor)."""
+    ext = p.suffix.lower()
+    check = _syntax_check(p, text)
+    if check:
+        return f"\nSYNTAX ERROR: {check}\nThe file was saved but does not compile. Fix it next."
+    note = "\nSyntax check: OK." if check == "" else ""
+    if ext not in CODE_EXTS:
+        return note
+    return note + ("\nNext step: before finishing, run this code yourself (its tests, or a short script with run_python "
+                   "or run_command); a syntax check alone is not verification. Do not ask the user to run it. "
+                   "Do not start servers or other commands that never finish.")
 
 
 def _walk_files(root: Path, pattern: str):
@@ -113,7 +287,7 @@ def read_file(path: str, start_line: int = 1, max_lines: int = 400) -> str:
         lines.pop()  # dosya sonundaki satır sonu ayrı bir satır sayılmasın
     start = max(1, int(start_line))
     end = min(len(lines), start + max(1, int(max_lines)) - 1)
-    body = "\n".join(f"{i:>5}→{lines[i - 1]}" for i in range(start, end + 1))
+    body = _numbered(lines[start - 1 : end], start)
     more = f"\n... ({len(lines) - end} satır daha var; devamı için start_line={end + 1})" if end < len(lines) else ""
     return f"{p} ({len(lines)} satır; soldaki numaralar ve → işareti dosyaya ait değildir)\n{body}{more}"
 
@@ -175,33 +349,114 @@ def search_files(pattern: str, path: str = ".", file_pattern: str = "*") -> str:
 
 # --- yazma araçları (onay gerekir) ---
 
+def _shrink_warning(p: Path, new: str) -> str:
+    """Var olan uzun bir dosya çok daha kısa bir içerikle ezilecekse uyarı (modeller bazen yalnızca değişen kısmı yazıp
+    dosyanın geri kalanını siliyor)."""
+    if not p.is_file():
+        return ""
+    try:
+        old_lines = len(_read_raw(p).splitlines())
+    except ToolError:
+        return ""
+    new_lines = len(new.splitlines())
+    if old_lines >= 30 and new_lines < old_lines * 0.5:
+        return (f"Warning: this replaced a {old_lines}-line file with only {new_lines} lines. write_file overwrites the "
+                "WHOLE file; if you meant to change only part of it, the rest of the file is now gone: write the "
+                "complete file again (use edit_file for partial changes).")
+    return ""
+
+
 def write_file_preview(path: str, content: str) -> str:
     p = _path(path)
     if p.exists():
-        return _diff(p, _read_raw(p).replace("\r\n", "\n"), content)
+        warning = _shrink_warning(p, content)
+        return (f"# UYARI: {warning}\n" if warning else "") + _diff(p, _read_raw(p).replace("\r\n", "\n"), content)
     return f"+++ {p} (yeni dosya)\n" + "\n".join("+" + line for line in content.splitlines())
 
 
 def write_file(path: str, content: str) -> str:
     p = _path(path)
     crlf = p.exists() and "\r\n" in _read_raw(p)
+    warning = _shrink_warning(p, content)
+    _remember(p)
     _write(p, content, crlf)
-    return f"yazıldı: {p} ({len(content.splitlines())} satır)" + _verify_hint(p)
+    return (f"yazıldı: {p} ({len(content.splitlines())} satır)" + (f"\n{warning}" if warning else "")
+            + _after_write(p, content))
+
+
+def _strip_line_numbers(text: str) -> tuple[str, bool]:
+    lines = text.split("\n")
+    filled = [line for line in lines if line.strip()]
+    if not filled or not all(LINE_PREFIX.match(line) for line in filled):
+        return text, False
+    return "\n".join(LINE_PREFIX.sub("", line, count=1) for line in lines), True
+
+
+def _loose_replace(text: str, old: str, new: str) -> str | None:
+    """Satır sonu boşlukları yok sayılınca old tam satırlar olarak tek bir yerde geçiyorsa değiştirilmiş metin."""
+    lines, old_lines, new_lines = text.split("\n"), old.split("\n"), new.split("\n")
+    if len(old_lines) > 1 and old_lines[-1] == "":
+        old_lines = old_lines[:-1]
+        if len(new_lines) > 1 and new_lines[-1] == "":
+            new_lines = new_lines[:-1]
+    key = [line.rstrip() for line in old_lines]
+    if not any(key):
+        return None
+    stripped = [line.rstrip() for line in lines]
+    n = len(key)
+    hits = [i for i in range(len(lines) - n + 1) if stripped[i] == key[0] and stripped[i : i + n] == key]
+    if len(hits) != 1:
+        return None
+    i = hits[0]
+    return "\n".join(lines[:i] + new_lines + lines[i + n :])
+
+
+def _closest(text: str, old: str) -> str:
+    """old_text bulunamayınca dosyada ona en çok benzeyen kısım (modelin tekrar okumasına gerek kalmasın)."""
+    lines = text.split("\n")
+    want = [line.strip() for line in old.strip("\n").split("\n")]
+    n = len(want)
+    if not lines or not any(want):
+        return ""
+    target = "\n".join(want)
+    stripped = [line.strip() for line in lines]
+    scored = []
+    for i in range(max(1, len(lines) - n + 1)):
+        sm = difflib.SequenceMatcher(None, "\n".join(stripped[i : i + n]), target, autojunk=False)
+        scored.append((sm.quick_ratio(), i, sm))
+    best_ratio, best = 0.0, -1
+    for _, i, sm in sorted(scored, key=lambda s: s[0], reverse=True)[:5]:
+        if (r := sm.ratio()) > best_ratio:
+            best_ratio, best = r, i
+    if best < 0 or best_ratio < 0.5:
+        return " Dosyada benzer bir kısım da yok; dosyayı read_file ile tekrar oku."
+    a, b = max(0, best - 1), min(len(lines), best + n + 1)
+    region = _numbered(lines[a:b][:60], a + 1)
+    return (f"\nDosyada en çok benzeyen kısım (satır {a + 1}-{b}, benzerlik %{best_ratio * 100:.0f}). old_text'i buradan "
+            f"birebir, satır numaraları ve → olmadan kopyala:\n{region}")
 
 
 def _edit_target(path: str, old_text: str, new_text: str) -> tuple[Path, str, str, bool]:
     p = _path(path)
     raw = _read_raw(p, strict=True)
     text = raw.replace("\r\n", "\n")
-    old_text = old_text.replace("\r\n", "\n")
+    old_text, numbered = _strip_line_numbers(old_text.replace("\r\n", "\n"))
+    new_text = new_text.replace("\r\n", "\n")
+    if numbered:
+        new_text = _strip_line_numbers(new_text)[0]
     if not old_text:
         raise ToolError("old_text boş olamaz")
     count = text.count(old_text)
-    if count == 0:
-        raise ToolError("old_text dosyada bulunamadı; dosyayı read_file ile tekrar oku ve metni birebir (satır numaraları olmadan) kopyala")
+    if count == 1:
+        return p, text, text.replace(old_text, new_text, 1), "\r\n" in raw
     if count > 1:
-        raise ToolError(f"old_text dosyada {count} kez geçiyor; çevresinden birkaç satır daha ekleyerek benzersiz yap")
-    return p, text, text.replace(old_text, new_text.replace("\r\n", "\n"), 1), "\r\n" in raw
+        where = [text[: m.start()].count("\n") + 1 for m in re.finditer(re.escape(old_text), text)]
+        raise ToolError(f"old_text dosyada {count} kez geçiyor (satır {', '.join(map(str, where[:10]))}); "
+                        "çevresinden birkaç satır daha ekleyerek benzersiz yap")
+    loose = _loose_replace(text, old_text, new_text)
+    if loose is not None:
+        return p, text, loose, "\r\n" in raw
+    raise ToolError("old_text dosyada bulunamadı." + _closest(text, old_text))
 
 
 def edit_file_preview(path: str, old_text: str, new_text: str) -> str:
@@ -211,40 +466,17 @@ def edit_file_preview(path: str, old_text: str, new_text: str) -> str:
 
 def edit_file(path: str, old_text: str, new_text: str) -> str:
     p, _, new, crlf = _edit_target(path, old_text, new_text)
+    _remember(p)
     _write(p, new, crlf)
-    return f"düzenlendi: {p}" + _verify_hint(p)
-
-
-def _shell_args(command: str) -> list[str]:
-    if os.name == "nt":
-        exe = shutil.which("pwsh") or shutil.which("powershell")
-        if exe:
-            utf8 = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; $OutputEncoding = [Text.Encoding]::UTF8; "
-            return [exe, "-NoProfile", "-NonInteractive", "-Command", utf8 + command]
-        return ["cmd", "/c", command]
-    return ["/bin/sh", "-c", command]
-
-
-def run_command(command: str, timeout: int = 120) -> str:
-    timeout = min(max(int(timeout), 1), 600)
-    try:
-        r = subprocess.run(
-            _shell_args(command), capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=timeout, stdin=subprocess.DEVNULL,
-        )
-    except subprocess.TimeoutExpired:
-        raise ToolError(f"komut {timeout} saniyede bitmedi ve durduruldu")
-    parts = [f"çıkış kodu: {r.returncode}"]
-    if r.stdout.strip():
-        parts.append(r.stdout.strip())
-    if r.stderr.strip():
-        parts.append("[stderr]\n" + r.stderr.strip())
-    return "\n".join(parts)
+    return f"düzenlendi: {p}" + _after_write(p, new)
 
 
 def _schema(properties: dict, required: list[str]) -> dict:
     return {"type": "object", "properties": properties, "required": required}
 
+
+_SHELL_HINT = (f" Use {SHELL_NAME} syntax, not bash; inside double quotes \\\" is NOT an escaped quote in PowerShell."
+               if POWERSHELL else "")
 
 TOOLS: dict[str, Tool] = {
     "read_file": Tool(
@@ -277,8 +509,8 @@ TOOLS: dict[str, Tool] = {
         search_files,
     ),
     "write_file": Tool(
-        "Create a new file or completely overwrite an existing one. Parent folders are created. "
-        "Requires user approval.",
+        "Create a new file or completely overwrite an existing one with the full content. Parent folders are created. "
+        "Code files are syntax-checked automatically. Requires user approval.",
         _schema({
             "path": {"type": "string", "description": "File path"},
             "content": {"type": "string", "description": "Full file content"},
@@ -296,14 +528,26 @@ TOOLS: dict[str, Tool] = {
         edit_file, needs_approval=True, preview=edit_file_preview,
     ),
     "run_command": Tool(
-        "Run a shell command (PowerShell on Windows) in the current directory and return its output. "
-        "Requires user approval. Do not run interactive commands.",
+        f"Run a shell command ({SHELL_NAME}) in the current directory and return its exit code and output."
+        f"{_SHELL_HINT} For Python code use run_python instead of python -c. Requires user approval. "
+        "Do not run interactive commands or servers.",
         _schema({
             "command": {"type": "string", "description": "Command to run"},
             "timeout": {"type": "integer", "description": "Seconds before the command is stopped. Default 120"},
         }, ["command"]),
         run_command, needs_approval=True, preview=lambda command, timeout=120: command,
         preview_lexer="powershell" if os.name == "nt" else "bash", echo_lines=20,
+    ),
+    "run_python": Tool(
+        "Run a Python script in the current directory and return its exit code and output. Pass the code itself "
+        "(multi-line is fine, no shell quoting needed). Best way to test code, query SQLite databases (import sqlite3) "
+        "or process files and data. Modules in the current directory can be imported. stdin is empty, so input() "
+        "does not work. Requires user approval.",
+        _schema({
+            "code": {"type": "string", "description": "Python source code to run"},
+            "timeout": {"type": "integer", "description": "Seconds before the script is stopped. Default 120"},
+        }, ["code"]),
+        run_python, needs_approval=True, preview=lambda code, timeout=120: code, preview_lexer="python", echo_lines=20,
     ),
 }
 

@@ -61,13 +61,26 @@ kullanabilen ilki seçilir.
 | `/model` | Modelleri ve yüklü olup olmadıklarını listeler; `/model <ad>` ile yüklü olana geçer |
 | `/unload` | Tüm modelleri boşaltır |
 | `/clear` | Yeni sohbet başlatır |
+| `/undo` | Modelin yaptığı son dosya değişikliğini geri alır (art arda kullanılabilir) |
+| `/compact` | Eski araç çıktılarını kısaltıp bağlamda yer açar (bağlam dolarken bu kendiliğinden de yapılır) |
 | `/tools` | Araçları açar/kapatır |
 | `/think` | Düşünmeyi açar/kapatır; `/think on`, `/think off`, `/think auto` da olur |
 | `/show` | Düşünme metnini ekranda gösterir/gizler |
 | `/auto` | Onay sormayı açar/kapatır (dikkat) |
 | `/exit` | Çıkış |
 
-Alt+Enter yeni satır ekler, Ctrl+C cevabı durdurur, ↑/↓ önceki mesajları getirir.
+Alt+Enter yeni satır ekler, Ctrl+C cevabı durdurur, ↑/↓ önceki mesajları getirir. Sohbet modunda adım
+sınırına (`max_steps`) gelinirse devam edilip edilmeyeceği sorulur.
+
+## Görünüm
+
+Cevaplar terminalde Markdown olarak biçimlenir (başlık, liste, tablo, renkli kod blokları); tamamlanan
+bloklar kalıcı basılır, yazılmakta olan blok canlı güncellenir. Her modelin bir taşı ve rengi vardır
+(♞ knight, ♜ rook, ♛ queen, ♝ bishop, ♚ king); açılış logosu, istem, alt çubuk ve bekleme göstergesi bu
+rengi kullanır. Bekleme göstergesi ne olduğunu (bağlam işleniyor, düşünüyor · 812 token, write_file
+hazırlanıyor · 2.4k karakter, çalışıyor) ve geçen süreyi gösterir; alt çubukta bağlamın doluluğu görünür.
+Animasyonları `--no-anim` ya da `"animations": false` kapatır. Çıktı terminal değilse (dosyaya ya da boruya
+yazılıyorsa) metin biçimlenmeden olduğu gibi akar.
 
 ## Araçlar
 
@@ -76,17 +89,48 @@ Alt+Enter yeni satır ekler, Ctrl+C cevabı durdurur, ↑/↓ önceki mesajları
 | `list_dir`, `read_file`, `search_files` | gerekmez |
 | `write_file`, `edit_file` | gerekir; önce değişiklik farkı gösterilir |
 | `run_command` (PowerShell) | gerekir; önce komut gösterilir |
+| `run_python` | gerekir; önce kod gösterilir |
+
+- `run_python` Python kodunu kabuktan geçirmeden çalıştırır (kod stdin'den verilir). Küçük modeller
+  PowerShell'de `python -c "...\"...\"..."` gibi bash tırnaklaması yazıp aynı hatayı defalarca tekrarlıyordu;
+  testler, veri işleme ve SQLite sorguları için bu araç kullanılır. Bulunduğun klasördeki modüller içe aktarılabilir.
+- `write_file` ve `edit_file` Python, JavaScript ve JSON dosyalarının sözdizimini yazdıktan hemen sonra
+  denetleyip sonucu modele bildirir. 30+ satırlık bir dosya yarısından kısa bir içerikle ezilirse model uyarılır.
+- `edit_file` satır sonu boşluk farklarını ve `read_file`'dan kopyalanan satır numaralarını tolere eder;
+  metin bulunamazsa dosyada en çok benzeyen kısmı satır numaralarıyla modele gösterir.
+- `run_command` zaman aşımında yalnızca kabuğu değil başlattığı tüm süreçleri kapatır. PowerShell bir hatayı
+  yazıp yine 0 ile çıkarsa sonuçta bu belirtilir.
+- Tek bir araç çıktısı bağlamın en fazla ~%30'u kadar modele gider.
 
 Onay sorusuna `e` (evet), `t` (bu oturumda o araç için hep evet) ya da `h` (hayır) yazabilirsin.
 Bunların dışında bir şey yazarsan işlem reddedilir ve yazdığın metin not olarak modele iletilir.
 
 Yeni araç eklemek için `tools.py` içinde bir fonksiyon yazıp `TOOLS` sözlüğüne kaydetmen yeterli.
 
+## Ajan döngüsü korumaları
+
+Yerel modellerin benchmark'ta (`benchmark/v2`) en sık takıldığı durumlar CLI tarafında yakalanır:
+
+| Durum | CLI ne yapar |
+|---|---|
+| Bağlam doluyor (16k'da uzun görevler araç çağrısını yarıda kesiyordu) | %62'yi geçince eski araç çıktılarını ve dosya içeriklerini kısaltır; son adımlar korunur |
+| Araç argümanı bozuk JSON | Kaçırılmamış ters bölü, ham satır sonu ve fazladan karakterleri onarır; onarılamazsa geçmişe `{}` yazar (LM Studio'nun 500 vermemesi için) ve kesildiyse modele parça parça yazmasını söyler |
+| Model aracı çağırmak yerine `write_file(...)` gibi metin yazdı | Çalıştırılmadığını söyleyip gerçekten çağırmasını ister |
+| "Şimdi testleri çalıştırıyorum:" deyip durdu | Adımı araçla yapmasını ya da özetle bitirmesini ister |
+| Hiç araç kullanmadan "oluşturdum, test ettim" dedi | Gerçekten yapmasını ya da yapmadığını söylemesini ister |
+| İstenen dosyayı yazmayıp kodu sohbete yapıştırdı | Dosyaya kaydetmesini ister |
+| Cevap uzunluk sınırında kesildi | Kaldığı yerden devam etmesini ister |
+| Aynı komut aynı hatayla tekrar tekrar başarısız | Sonuca not ekler: PowerShell tırnak hatası, kurulu olmayan program (ör. `sqlite3`), `.schema` gibi SQL olmayan komutlar, "bu komut zaten başarısız oldu", "3 kez aynı hata: yöntemi değiştir" |
+| Düşünme uzayıp gidiyor | `think_budget` token'ı aşınca o adım düşünmeden tekrarlanır |
+| Tek seferlik modda adım sınırı yaklaşıyor | Son iki adımda modele bitirmeye odaklanmasını söyler |
+
+Bu uyarılar bir turda en fazla iki kez yapılır; ekranda `↻` ve `↳` ile gösterilir.
+
 ## Düşünme modları
 
 | Mod | Ne yapar | Ne zaman |
 |---|---|---|
-| `auto` (varsayılan) | Düşünme kapalı başlar. Mesaj bir analiz sorusuysa (kod ne yazdırır/ne yapar, neden, açıkla, karşılaştır, why, explain...) o tur açılır. Bir komut başarısız olursa (ör. testler geçmezse) turun geri kalanında açılır. Tur bitince yeniden kapanır. | Günlük kullanım |
+| `auto` (varsayılan) | Düşünme kapalı başlar. Mesaj bir analiz sorusuysa (kod ne yazdırır/ne yapar, neden, açıkla, karşılaştır, why, explain...) o tur açılır; analiz isteyen ama dosya yazdıran/düzelttiren bir görevse (ör. "hatayı düzelt ve nedenini açıkla") yalnızca planlama adımında açılır. Bir komut başarısız olursa (ör. testler geçmezse) bir sonraki adımda açılır. Tur bitince yeniden kapanır. | Günlük kullanım |
 | `off` | Hiç düşünmez; en hızlısı. | Basit, hızlı işler |
 | `on` | Her cevaptan önce düşünür; çok yavaş, küçük modellerde döngüye girebilir. | Zor bir problemi elle zorlamak için |
 
@@ -115,5 +159,10 @@ modelde en yüksek puanı aldı:
   "Düşünme modları" bölümünde. Düşünme kapalıyken istekle birlikte `reasoning_effort: "none"`
   gönderilir; bu, LM Studio'da Gemma 4 ve Qwen3.5'te düşünmeyi gerçekten kapatır.
 - `show_thinking`: düşünme metni ekranda gösterilsin mi. Gizliyken model yine düşünür.
+- `think_budget`: bir adımda en fazla kaç token düşünülsün (varsayılan 6144; `0` sınırsız). Aşılırsa adım
+  düşünmeden tekrarlanır; küçük modeller aksi halde dakikalarca düşünüp hiç cevap vermeyebiliyor.
+- `max_steps`: bir mesaj için en fazla model adımı (varsayılan 25).
+- `context_length`: sunucu bağlam uzunluğunu bildirmiyorsa (LM Studio dışı) otomatik kısaltma için kullanılır.
+- `animations`, `markdown`: animasyonlar ve Markdown biçimi (varsayılan ikisi de açık).
 - `presets`: `/load` için modeller. Anahtar CLI'da görünen ad (`queen`), `model` LM Studio'daki model
   kimliği, `args` doğrudan `lms load` komutuna geçirilir, `desc` listelerde görünen açıklama.
