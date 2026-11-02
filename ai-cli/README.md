@@ -11,14 +11,16 @@ Hangi adın hangi modeli yüklediği `config.json`'daki `presets` bölümünde t
 
 | Ad | Ne için |
 |---|---|
-| `knight` | Hafif, çok hızlı ve görsel destekli; günlük pratik işler için (~35 tok/s) |
+| `pawn` | En küçük ve en hızlı; kısa, basit işler için (~100 tok/s) |
+| `knight` | Küçük akıl yürütme modeli; araçsız, her zaman düşünür; matematik ve mantık soruları için (~50 tok/s) |
+| `bishop` | Hafif, çok hızlı ve görsel destekli; günlük pratik işler için (~40 tok/s) |
 | `rook` | Kod yazma ve araç kullanımında en seri işçi; düşünmeden üretir (~20 tok/s) |
 | `queen` | Varsayılan ana model; her alanda tam puanlı, gerektiğinde düşünür (~17 tok/s) |
-| `bishop` | Uzun kod incelemeleri için; yavaş görünür ama lafı uzatmadan çabuk bitirir (~9 tok/s) |
 | `king` | Son çare; çok yavaştır ama diğerlerinin tıkandığı en zor işleri çözer (~2,5 tok/s) |
 
 Hepsi 16k bağlam ve tek eşzamanlı tahminle yüklenir; GPU oranları ölçülerek seçildi
-(`benchmark/tune_gpu.py`).
+(`benchmark/tune_gpu.py`). Modeli boş (`"model": ""`) bir hazır ayar boş yuvadır: listede görünür ama
+yüklenemez; bir model indirince `config.json`'da ona atanır.
 
 ## Kurulum
 
@@ -41,14 +43,14 @@ python -m venv ai-cli\.venv
 ```powershell
 .\ai-cli\ai.bat                      # sohbet modu (bulunduğun klasörde çalışır)
 .\ai-cli\ai.bat "bu klasörde ne var?" # tek seferlik soru
-.\ai-cli\ai.bat -m knight            # yüklü modellerden birini seç (ad ya da adın başı)
+.\ai-cli\ai.bat -m bishop            # yüklü modellerden birini seç (ad ya da adın başı)
 .\ai-cli\ai.bat --no-tools           # araçsız, sadece sohbet
 .\ai-cli\ai.bat --no-think           # düşünme hep kapalı (--think: hep açık)
 .\ai-cli\ai.bat --auto-think         # otomatik düşünme (config.json'daki varsayılan)
 .\ai-cli\ai.bat --show-think         # düşünme metnini ekranda göster
 ```
 
-`ai-cli` klasörünü kullanıcı `PATH` ortam değişkenine eklerseniz her yerden doğrudan `gambit` veya `ai` yazarak çalıştırabilirsiniz (ör. `gambit -m knight`).
+`ai-cli` klasörünü kullanıcı `PATH` ortam değişkenine eklerseniz her yerden doğrudan `gambit` veya `ai` yazarak çalıştırabilirsiniz (ör. `gambit -m bishop`).
 
 LM Studio sunucusu kapalıysa CLI onu kendisi başlatır. Model seçilmezse, yüklü modellerden araç
 kullanabilen ilki seçilir.
@@ -76,7 +78,7 @@ sınırına (`max_steps`) gelinirse devam edilip edilmeyeceği sorulur.
 
 Cevaplar terminalde Markdown olarak biçimlenir (başlık, liste, tablo, renkli kod blokları); tamamlanan
 bloklar kalıcı basılır, yazılmakta olan blok canlı güncellenir. Her modelin bir taşı ve rengi vardır
-(♞ knight, ♜ rook, ♛ queen, ♝ bishop, ♚ king); açılış logosu, istem, alt çubuk ve bekleme göstergesi bu
+(♟ pawn, ♞ knight, ♝ bishop, ♜ rook, ♛ queen, ♚ king); açılış logosu, istem, alt çubuk ve bekleme göstergesi bu
 rengi kullanır. Bekleme göstergesi ne olduğunu (bağlam işleniyor, düşünüyor · 812 token, write_file
 hazırlanıyor · 2.4k karakter, çalışıyor) ve geçen süreyi gösterir; alt çubukta bağlamın doluluğu görünür.
 Animasyonları `--no-anim` ya da `"animations": false` kapatır. Çıktı terminal değilse (dosyaya ya da boruya
@@ -145,9 +147,8 @@ modelde en yüksek puanı aldı:
 | Model | Kapalı | Otomatik | Açık |
 |---|---|---|---|
 | `queen` | 94 puan, 10 dk | 100 puan, 20 dk | 94 puan, 69 dk |
-| `knight` | 71 puan, 6 dk | 82 puan, 20 dk | 80 puan, 61 dk |
+| `bishop` (o zamanki adıyla `knight`) | 71 puan, 6 dk | 82 puan, 20 dk | 80 puan, 61 dk |
 | `rook` (düşünme yok) | 88 puan, 8 dk | — | — |
-| `bishop` | — | 71 puan, 13 dk | — |
 | `king` | 96 puan, 56 dk | — | — |
 
 ## Ayarlar (`config.json`)
@@ -166,3 +167,6 @@ modelde en yüksek puanı aldı:
 - `animations`, `markdown`: animasyonlar ve Markdown biçimi (varsayılan ikisi de açık).
 - `presets`: `/load` için modeller. Anahtar CLI'da görünen ad (`queen`), `model` LM Studio'daki model
   kimliği, `args` doğrudan `lms load` komutuna geçirilir, `desc` listelerde görünen açıklama.
+  `"thinking": false` düşünemeyen, `"thinking": "always"` düşünmesi kapatılamayan model içindir (ikisinde de
+  düşünme ayarı o modelde bir şey değiştirmez). `"tools": false` araç çağıramayan modelde araçları ve araç
+  talimatlarını hiç göndermez; model yalnızca sohbet eder.

@@ -1,0 +1,194 @@
+{
+ "result": {
+  "preset": "king",
+  "model_id": "qwen3.8-27b",
+  "mode": "off",
+  "task": "kod-kova-js",
+  "category": "Kod yazma",
+  "level": 3,
+  "weight": 3.0,
+  "score": 0.9559,
+  "detail": "eksik: kodu kendisi doğruladı",
+  "notes": "süre sınırı",
+  "items": [
+   [
+    "dolu başlar, boşalır",
+    1,
+    1.0,
+    ""
+   ],
+   [
+    "kesirli dolum",
+    1.5,
+    1.0,
+    ""
+   ],
+   [
+    "kapasitede durur",
+    1,
+    1.0,
+    ""
+   ],
+   [
+    "başarısız tryTake jeton düşmez",
+    1.5,
+    1.0,
+    ""
+   ],
+   [
+    "saat geri gidince",
+    1,
+    1.0,
+    ""
+   ],
+   [
+    "msUntil",
+    1,
+    1.0,
+    ""
+   ],
+   [
+    "msUntil 0",
+    0.5,
+    1.0,
+    ""
+   ],
+   [
+    "msUntil yukarı yuvarlar",
+    1,
+    1.0,
+    ""
+   ],
+   [
+    "Infinity durumları",
+    1,
+    1.0,
+    ""
+   ],
+   [
+    "kesirli n",
+    0.5,
+    1.0,
+    ""
+   ],
+   [
+    "throws(() => new TokenBucket({ capacity: 0, refillPerSecond: 1 }), RangeError)",
+    0.5,
+    1.0,
+    ""
+   ],
+   [
+    "throws(() => new TokenBucket({ capacity: 3, refillPerSecond: -1 }), RangeError)",
+    0.5,
+    1.0,
+    ""
+   ],
+   [
+    "throws(() => new TokenBucket({ capacity: \"3\", refillPerSecond: 1 }), RangeError)",
+    0.5,
+    1.0,
+    ""
+   ],
+   [
+    "throws(() => new TokenBucket({ capacity: 3, refillPerSecond: 1 }).tryTake(0), RangeError)",
+    0.5,
+    1.0,
+    ""
+   ],
+   [
+    "throws(() => new TokenBucket({ capacity: 3, refillPerSecond: 1 }).msUntil(-2), RangeError)",
+    0.5,
+    1.0,
+    ""
+   ],
+   [
+    "varsayılan saat",
+    0.5,
+    1.0,
+    ""
+   ],
+   [
+    "kodu kendisi doğruladı",
+    0.6,
+    0.0,
+    ""
+   ]
+  ],
+  "wall": 480.4,
+  "tokens": 958,
+  "prompt_tokens": 2168,
+  "calls": 2,
+  "think_calls": 0,
+  "tool_calls": 2,
+  "timed_out": true,
+  "server_error": "",
+  "crash": "",
+  "time": "2026-11-02T08:30:02"
+ },
+ "final": "Let me clean up an unused field and then verify behavior with tests.",
+ "events": [
+  {
+   "name": "write_file",
+   "args": {
+    "path": "C:\\AI\\benchmark\\v2\\results-v3\\sandboxes\\king__off\\kod-kova-js\\kova.js",
+    "content": "'use strict';\n\nclass TokenBucket {\n  constructor(opts) {\n    if (opts === null || typeof opts !== 'object' || Array.isArray(opts)) {\n      throw new RangeError('options object is required');\n    }\n    const capacity = opts.capacity;\n    const refillPerSecond = opts.refillPerSecond;\n    const now = opts.now;\n\n    if (typeof capacity !== 'number' || !Number.isFinite(capacity) || capacity <= 0) {\n      throw new RangeError('capacity must be a positive finite number');\n    }\n    if (typeof refillPerSecond !== 'number' || refillPerSecond < 0) {\n      throw new RangeError('refillPerSecond must be a non-negative number');\n    }\n\n    this._capacity = capacity;\n    this._ratePerMs = refillPerSecond / 1000;\n    if (typeof now === 'function') {\n      this._nowFn = now;\n    } else {\n      this._nowFn = Date.now;\n    }\n\n    const t0 = this._clockNow();\n    this._lastTime = Number.isFinite(t0) ? t0 : 0;\n    this._tokens = capacity; // bucket starts full\n  }\n\n  _clockNow() {\n    try {\n      return this._nowFn();\n    } catch (e) {\n      if (!Number.isFinite(this._lastTime)) throw e;\n      return this._lastTime;\n    }\n  }\n\n  // Advance bucket to current time, applying refill. If clock went backwards\n  // relative to the max seen time, do not add or remove tokens (keep last state).\n  _advance() {\n    const t = Number.isFinite(this._clockNow()) ? this._clockNow() : this._lastTime;\n    if (t > this._lastTime) {\n      const dtMs = t - this._lastTime; // >= 0\n      this._tokens = Math.min(\n        this._capacity,\n        this._tokens + this._ratePerMs * dtMs\n      );\n      this._lastTime = t;\n    } else if (t < this._lastTime) {\n      // clock went backwards: keep tokens and the max seen time as reference.\n      this._clockBackwards = true;\n      // no token change, _lastTime stays at max seen time\n    } else {\n      // same time: nothing to do\n    }\n  }\n\n  available() {\n    this._advance();\n    return this._tokens;\n  }\n\n  tryTake(n) {\n    if (n === undefined || n === null) n = 1;\n    if (typeof n !== 'number' || !Number.isFinite(n) || n <= 0) {\n      throw new RangeError('n must be a positive finite number');\n    }\n    this._advance();\n    if (this._tokens >= n) {\n      this._tokens -= n;\n      return true;\n    }\n    return false;\n  }\n\n  msUntil(n) {\n    if (n === undefined || n === null) n = 1;\n    if (typeof n !== 'number' || !Number.isFinite(n) || n <= 0) {\n      throw new RangeError('n must be a positive finite number');\n    }\n    this._advance();\n\n    if (this._tokens >= n) return 0;\n\n    const need = n - this._tokens; // > 0 tokens short\n    const ratePerMs = this._ratePerMs;\n    if (!(need <= this._capacity)) {\n      // cannot ever hold that many\n      return Infinity;\n    }\n    if (ratePerMs <= 0) {\n      return Infinity;\n    }\n\n    let ms = need / ratePerMs;\n    // ceil to a whole number of milliseconds, avoiding float artifacts.\n    const result = Math.ceil(ms);\n    return Number.isFinite(result) ? result : Infinity;\n  }\n}\n\nmodule.exports = { TokenBucket };\n"
+   },
+   "result": "yazıldı: C:\\AI\\benchmark\\v2\\results-v3\\sandboxes\\king__off\\kod-kova-js\\kova.js (105 satır)\nSyntax check: OK.\nNext step: before finishing, run this code yourself (its tests, or a short script with run_python or run_command); a syntax check alone is not verification. Do not ask the user to run it. Do not start servers or other commands that never finish.",
+   "t": 429.6
+  },
+  {
+   "name": "edit_file",
+   "args": {},
+   "result": "Hata: argümanlar geçerli bir JSON nesnesi değil (Unterminated string starting at: line 1 column 100 (char 99)).",
+   "t": 480.4
+  }
+ ],
+ "messages": [
+  {
+   "role": "system",
+   "content": "You are Gambit, a helpful assistant running in the user's terminal, powered by a local model. Your current mode is 'king'. If asked who or what you are, introduce yourself by that name; do not name the underlying model or its maker.\nCurrent directory: C:\\AI\\benchmark\\v2\\results-v3\\sandboxes\\king__off\\kod-kova-js\nOS: Windows 11 | Date: 2026-11-02\nAlways reply in the language the user writes in (usually Turkish). Be concise and practical.\nYou have tools to list, read, search, create and edit files, to run shell commands (PowerShell 7) and to run Python code.\nUse them whenever you need real information; never invent file contents or command output.\nRelative paths are relative to the current directory.\nInstalled programs: python, node, npm, git. Not installed: sqlite3.\nrun_command uses PowerShell 7: write PowerShell syntax, not bash. For any Python code (tests, data processing, SQLite queries) use run_python instead of python -c, which breaks on PowerShell quoting.\nRead a file before editing it. Use edit_file for small changes, write_file for new files or full rewrites.\nWhen the user asks you to write or create a program, script or file, save it with write_file; do not paste the whole file into the chat instead. If they also ask you to run it, run it.\nNever say that you created a file, ran a command or verified something unless a tool result in this conversation confirms it.\nwrite_file, edit_file, run_command and run_python ask the user for approval. If the user rejects, follow their note or ask what they want instead.\nAfter writing or changing code you MUST verify it yourself before finishing; never ask the user to run it for you. write_file and edit_file already check the syntax, so also run its tests or exercise it with a short script in run_python (for a web app, call it through its test client, e.g. Flask's app.test_client()). If the check fails, fix the code and check again. Briefly tell the user what you verified.\nIf a command fails, read the error and fix its cause; never repeat the same failing command.\nNever stop right after announcing a next step: either call the tool for it or finish with a summary.\nNever run commands that do not finish on their own (web servers, watchers, interactive programs that wait for keyboard input); they hang until the timeout. Check those another way (syntax check, a short script that imports and tests the logic) and tell the user the command to start them themselves.\nNever remove or weaken a requested feature just to make a check pass (for example deleting input() calls so a game exits cleanly). If something cannot be verified here, keep it and say so honestly."
+  },
+  {
+   "role": "user",
+   "content": "JavaScript'te (Node.js) bir `TokenBucket` sınıfı yaz:\n- `new TokenBucket({ capacity, refillPerSecond, now })`: `now` isteğe bağlı, milisaniye döndüren bir\n  fonksiyondur (varsayılan `Date.now`); testler sahte saat verir. Kova dolu başlar.\n- Jetonlar zamanla sürekli (kesirli olarak) dolar: geçen her saniye için `refillPerSecond` jeton, en fazla\n  `capacity`'ye kadar. Saat geri giderse jeton eklenmez/çıkarılmaz; dolum hesabında o ana kadar görülen\n  en büyük zaman referans kalır.\n- `tryTake(n = 1)`: yeterli jeton varsa n jetonu düşer ve true döner; yoksa hiçbir şey düşmeden false.\n- `available()`: o anki jeton sayısı (kesirli olabilir).\n- `msUntil(n = 1)`: n jetonun kullanılabilir olmasına kaç ms kaldığı (yukarı yuvarlanmış tam sayı; şimdi\n  yeterliyse 0). n > capacity ya da dolum hızı 0 iken jeton yetmiyorsa `Infinity`.\n- Geçersiz değerlerde `RangeError` fırlat: capacity pozitif sonlu sayı değilse, refillPerSecond negatif ya da\n  sayı değilse; tryTake/msUntil için n pozitif sonlu sayı değilse.\n`module.exports = { TokenBucket };` ile dışa aktar.\nKodu `kova.js` dosyasına yaz (bu klasörde, Node.js CommonJS: `module.exports`). Harici paket kullanma. Çözümün gizli testlerle (kenar durumları dahil) puanlanacak."
+  },
+  {
+   "role": "assistant",
+   "content": "",
+   "tool_calls": [
+    {
+     "id": "3bQgTi0QUFE4wVhQXz9CjsLtyG9msGw8",
+     "type": "function",
+     "function": {
+      "name": "write_file",
+      "arguments": "{\"path\":\"C:\\\\AI\\\\benchmark\\\\v2\\\\results-v3\\\\sandboxes\\\\king__off\\\\kod-kova-js\\\\kova.js\",\"content\":\"'use strict';\\n\\nclass TokenBucket {\\n  constructor(opts) {\\n    if (opts === null || typeof opts !== 'object' || Array.isArray(opts)) {\\n      throw new RangeError('options object is required');\\n    }\\n    const capacity = opts.capacity;\\n    const refillPerSecond = opts.refillPerSecond;\\n    const now = opts.now;\\n\\n    if (typeof capacity !== 'number' || !Number.isFinite(capacity) || capacity <= 0) {\\n      throw new RangeError('capacity must be a positive finite number');\\n    }\\n    if (typeof refillPerSecond !== 'number' || refillPerSecond < 0) {\\n      throw new RangeError('refillPerSecond must be a non-negative number');\\n    }\\n\\n    this._capacity = capacity;\\n    this._ratePerMs = refillPerSecond / 1000;\\n    if (typeof now === 'function') {\\n      this._nowFn = now;\\n    } else {\\n      this._nowFn = Date.now;\\n    }\\n\\n    const t0 = this._clockNow();\\n    this._lastTime = Number.isFinite(t0) ? t0 : 0;\\n    this._tokens = capacity; // bucket starts full\\n  }\\n\\n  _clockNow() {\\n    try {\\n      return this._nowFn();\\n    } catch (e) {\\n      if (!Number.isFinite(this._lastTime)) throw e;\\n      return this._lastTime;\\n    }\\n  }\\n\\n  // Advance bucket to current time, applying refill. If clock went backwards\\n  // relative to the max seen time, do not add or remove tokens (keep last state).\\n  _advance() {\\n    const t = Number.isFinite(this._clockNow()) ? this._clockNow() : this._lastTime;\\n    if (t > this._lastTime) {\\n      const dtMs = t - this._lastTime; // >= 0\\n      this._tokens = Math.min(\\n        this._capacity,\\n        this._tokens + this._ratePerMs * dtMs\\n      );\\n      this._lastTime = t;\\n    } else if (t < this._lastTime) {\\n      // clock went backwards: keep tokens and the max seen time as reference.\\n      this._clockBackwards = true;\\n      // no token change, _lastTime stays at max seen time\\n    } else {\\n      // same time: nothing to do\\n    }\\n  }\\n\\n  available() {\\n    this._advance();\\n    return this._tokens;\\n  }\\n\\n  tryTake(n) {\\n    if (n === undefined || n === null) n = 1;\\n    if (typeof n !== 'number' || !Number.isFinite(n) || n <= 0) {\\n      throw new RangeError('n must be a positive finite number');\\n    }\\n    this._advance();\\n    if (this._tokens >= n) {\\n      this._tokens -= n;\\n      return true;\\n    }\\n    return false;\\n  }\\n\\n  msUntil(n) {\\n    if (n === undefined || n === null) n = 1;\\n    if (typeof n !== 'number' || !Number.isFinite(n) || n <= 0) {\\n      throw new RangeError('n must be a positive finite number');\\n    }\\n    this._advance();\\n\\n    if (this._tokens >= n) return 0;\\n\\n    const need = n - this._tokens; // > 0 tokens short\\n    const ratePerMs = this._ratePerMs;\\n    if (!(need <= this._capacity)) {\\n      // cannot ever hold that many\\n      return Infinity;\\n    }\\n    if (ratePerMs <= 0) {\\n      return Infinity;\\n    }\\n\\n    let ms = need / ratePerMs;\\n    // ceil to a whole number of milliseconds, avoiding float artifacts.\\n    const result = Math.ceil(ms);\\n    return Number.isFinite(result) ? result : Infinity;\\n  }\\n}\\n\\nmodule.exports = { TokenBucket };\\n\"}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "3bQgTi0QUFE4wVhQXz9CjsLtyG9msGw8",
+   "content": "yazıldı: C:\\AI\\benchmark\\v2\\results-v3\\sandboxes\\king__off\\kod-kova-js\\kova.js (105 satır)\nSyntax check: OK.\nNext step: before finishing, run this code yourself (its tests, or a short script with run_python or run_command); a syntax check alone is not verification. Do not ask the user to run it. Do not start servers or other commands that never finish."
+  },
+  {
+   "role": "assistant",
+   "content": "Let me clean up an unused field and then verify behavior with tests.",
+   "tool_calls": [
+    {
+     "id": "eb5lkTLftorFmgRv7027c36KOrFi9jkv",
+     "type": "function",
+     "function": {
+      "name": "edit_file",
+      "arguments": "{}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "eb5lkTLftorFmgRv7027c36KOrFi9jkv",
+   "content": "Hata: argümanlar geçerli bir JSON nesnesi değil (Unterminated string starting at: line 1 column 100 (char 99))."
+  }
+ ]
+}

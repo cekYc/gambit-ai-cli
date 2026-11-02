@@ -1,6 +1,7 @@
 """Gambit CLI: LM Studio'daki (ya da OpenAI uyumlu herhangi bir sunucudaki) yerel modellerle terminalden
 sohbet eder. Model dosya okuyup arayabilir; dosya yazma ve komut çalıştırma senin onayınla olur.
-Modeller ekranda config.json'daki hazır ayar adlarıyla (knight, rook, queen, bishop, king) görünür."""
+Modeller ekranda config.json'daki hazır ayar adlarıyla (pawn, knight, bishop, rook, queen, king) görünür;
+modeli boş ("model": "") bir hazır ayar, ileride doldurulacak boş yuvadır."""
 
 import argparse
 import json
@@ -57,7 +58,10 @@ NEXT_STEP = re.compile(
 # Araç kullanmadan iş yapmış gibi konuşma
 CLAIMED_WORK = re.compile(
     r"\b(?:oluşturdum|kaydettim|yazdım|güncelledim|düzenledim|düzelttim|doğruladım|çalıştırdım|test ettim|ekledim|"
-    r"değiştirdim)\b|\bI(?: have|'ve)? (?:created|saved|written|wrote|ran|run|tested|verified|updated|fixed)\b", re.I)
+    r"değiştirdim|oluşturuldu|kaydedildi|yazıldı|güncellendi|düzenlendi|düzeltildi|doğrulandı|çalıştırıldı|"
+    r"test edildi|eklendi|değiştirildi)\b|"
+    r"\bI(?: have|'ve)? (?:created|saved|written|wrote|ran|run|tested|verified|updated|fixed)\b|"
+    r"\b(?:has been|have been|was|were) (?:created|saved|written|updated)\b", re.I)
 FILE_MENTION = re.compile(
     r"(?<![\w/\\.-])[\w-][\w./\\-]*\.(?:py|js|mjs|cjs|ts|sql|ps1|sh|json|md|html|css|txt|csv|ini|ya?ml|toml)\b")
 # Otomatik düşünme modunda düşünmeyi açan soru kalıpları: kodun ne yaptığını, nedenini soran analiz soruları
@@ -75,9 +79,10 @@ SQLITE_DOT = re.compile(r"""execute\w*\(\s*[rRbBuU]?(?:'{1,3}|"{1,3})\s*\.(?:sch
 RUN_TOOLS = ("run_command", "run_python")
 COMPACT_MARK = "[… Gambit: bağlam için kısaltıldı"
 CHARS_PER_TOKEN = 3.2
+LOOP_LIMIT = 5  # aynı araç çağrısı (ad + argümanlar) bir turda bu kadar tekrarlanırsa tur durdurulur
 
 # Her modelin taşı ve renkleri (arayüzde vurgu ve degrade için); orta tonlar açık ve koyu terminalde okunur
-PIECES = {"knight": ("♞", "#00afd7", "#5f5fd7"), "rook": ("♜", "#d78700", "#d75f5f"),
+PIECES = {"pawn": ("♟", "#87afaf", "#5f8787"), "knight": ("♞", "#00afd7", "#5f5fd7"), "rook": ("♜", "#d78700", "#d75f5f"),
           "queen": ("♛", "#af5fd7", "#5f87d7"), "bishop": ("♝", "#5faf5f", "#00afaf"),
           "king": ("♚", "#d7af00", "#d75f00")}
 DEFAULT_PIECE = ("♟", "#5f87d7", "#af5fd7")
@@ -171,10 +176,10 @@ def _partial_tail(s: str, tag: str) -> int:
 
 
 def alias_of(cfg: dict, model: str | None) -> str:
-    """Ekranda gösterilecek ad: modelin hazır ayar adı (knight, queen...). Model kimlikleri gösterilmez."""
+    """Ekranda gösterilecek ad: modelin hazır ayar adı (bishop, queen...). Model kimlikleri gösterilmez."""
     if not model:
         return "model yok"
-    return next((k for k, p in cfg.get("presets", {}).items() if p["model"] == model), "tanımsız model")
+    return next((k for k, p in cfg.get("presets", {}).items() if p.get("model") == model), "tanımsız model")
 
 
 def _one_line(text: str, limit: int = 100) -> str:
@@ -567,6 +572,7 @@ class Turn:
     missing_files: set = field(default_factory=set)  # mesajda adı geçen ama henüz olmayan dosyalar
     tool_calls: int = 0
     writes: int = 0
+    py_runs: int = 0  # istenen dosya kaydedilmeden yapılan run_python sayısı
     nudges: int = 0
     broken_retries: int = 0
     empty_retry: bool = False
@@ -576,6 +582,7 @@ class Turn:
     no_think_next: bool = False  # düşünme bütçesi aşıldı: sonraki adım düşünmeden
     force_compact: bool = False
     failed_commands: set = field(default_factory=set)
+    calls: dict = field(default_factory=dict)  # aynı araç çağrısının (ad + argümanlar) bu turda kaç kez yapıldığı
     last_error: str = ""
     same_error: int = 0
 
@@ -619,14 +626,15 @@ class Chat:
             f"OS: {platform.system()} {platform.release()} | Date: {date.today().isoformat()}",
             "Always reply in the language the user writes in (usually Turkish). Be concise and practical.",
         ]
-        if self.use_tools:
+        if self.tools_on():
             have, missing = self.env
             shell = tools.SHELL_NAME
             lines += [
                 f"You have tools to list, read, search, create and edit files, to run shell commands ({shell}) and "
                 "to run Python code.",
                 "Use them whenever you need real information; never invent file contents or command output.",
-                "Relative paths are relative to the current directory.",
+                "Relative paths are relative to the current directory. For files in the current directory use a "
+                "relative path (for example notes.py), not an absolute path.",
                 f"Installed programs: {', '.join(have) or 'none'}." + (f" Not installed: {', '.join(missing)}."
                                                                        if missing else ""),
                 (f"run_command uses {shell}: write PowerShell syntax, not bash. For any Python code (tests, data "
@@ -635,6 +643,9 @@ class Chat:
                 "Read a file before editing it. Use edit_file for small changes, write_file for new files or full rewrites.",
                 "When the user asks you to write or create a program, script or file, save it with write_file; do not "
                 "paste the whole file into the chat instead. If they also ask you to run it, run it.",
+                "run_python only runs code in memory; it never creates or saves a file. When a file is requested, save "
+                "a first working version with write_file early, then test the saved file (import it or run it) and "
+                "improve it, so a usable file exists even if you are stopped before you finish.",
                 "Never say that you created a file, ran a command or verified something unless a tool result in this "
                 "conversation confirms it.",
                 "write_file, edit_file, run_command and run_python ask the user for approval. If the user rejects, "
@@ -662,6 +673,9 @@ class Chat:
         """name: hazır ayar adı (queen) ya da adın başı (q); model kimliği de kabul edilir ama gösterilmez."""
         presets = self.cfg.get("presets", {})
         aliases = [k for k in presets if k == name.lower()] or [k for k in presets if k.startswith(name.lower())]
+        if len(aliases) == 1 and not presets[aliases[0]].get("model"):
+            console.print(f"[yellow]{escape(aliases[0])} boş bir yuva; önce config.json'da ona bir model ata.[/]")
+            return False
         if len(aliases) == 1:
             model = presets[aliases[0]]["model"]
         elif any(m["id"] == name for m in models or []):
@@ -689,10 +703,17 @@ class Chat:
         """Canlı alan, animasyon ve Markdown biçimi: yalnızca gerçek bir terminalde."""
         return console.is_terminal
 
+    def _preset(self) -> dict:
+        return self.cfg.get("presets", {}).get(self.name(), {})
+
     def can_think(self) -> bool:
-        """Model düşünme modunu destekliyor mu (hazır ayarda "thinking": false ise hayır)."""
-        preset = self.cfg.get("presets", {}).get(self.name(), {})
-        return preset.get("thinking", True)
+        """Düşünme açılıp kapatılabiliyor mu: hazır ayarda "thinking": false (hiç düşünmez) ya da "always"
+        (her zaman düşünür, kapatılamaz) ise hayır."""
+        return self._preset().get("thinking", True) is True
+
+    def tools_on(self) -> bool:
+        """Araçlar bu turda gönderilir mi: /tools ile açık ve model araç çağırabiliyor ("tools": false değil)."""
+        return self.use_tools and self._preset().get("tools", True)
 
     def _note(self, text: str, style: str = MUTED) -> None:
         console.print(Text(f"  {text}", style=style))
@@ -746,6 +767,10 @@ class Chat:
                     result = self._run_tool(call)
                     result = self._diagnose(call, result, limit - step)
                     self.messages.append({"role": "tool", "tool_call_id": call["id"], "content": result})
+                if max(turn.calls.values(), default=0) >= LOOP_LIMIT:
+                    console.print(f"[yellow]Model aynı adımı {LOOP_LIMIT} kez tekrarladı ve döngüye girdi; "
+                                  "durduruldu.[/] Farklı bir şekilde sormayı ya da daha büyük bir modeli dene.")
+                    return
         except KeyboardInterrupt:
             console.print("\n[yellow]Durduruldu.[/]")
             self._close_pending()
@@ -811,7 +836,7 @@ class Chat:
             reason = ("Cevap uzunluk sınırında kesildi; devam etmesi isteniyor.",
                       "Your last message was cut off by the output length limit. Continue exactly where it stopped, "
                       "without repeating. If you were writing a file, write it with write_file in smaller parts.")
-        elif not self.use_tools:
+        elif not self.tools_on():
             pass
         elif PSEUDO_TOOL_CALL.search(text):
             reason = ("Model aracı çağırmak yerine metin olarak yazdı; gerçekten çağırması isteniyor.",
@@ -828,10 +853,14 @@ class Chat:
                       "You said you created, ran or verified something, but you have not called any tool in this task, "
                       "so nothing was actually done. Do the work now with the tools, or tell the user plainly that it "
                       "was not done.")
-        elif t.writes == 0 and "```" in text and (missing := sorted(f for f in t.missing_files if not Path(f).exists())):
-            reason = (f"Model kodu dosyaya kaydetmedi ({', '.join(missing)}); kaydetmesi isteniyor.",
-                      f"The user asked for {', '.join(missing)}, but it was not created: the code is only in your "
-                      "message. Save it with write_file, then verify it.")
+        elif ((missing := sorted(f for f in t.missing_files if not Path(f).exists()))
+              and ("```" in text or t.py_runs or CLAIMED_WORK.search(text))):
+            where = ("you only ran the code with run_python, which does not save anything" if t.py_runs
+                     else "the code is only in your message")
+            reason = (f"İstenen dosya kaydedilmedi ({', '.join(missing)}); kaydetmesi isteniyor.",
+                      f"The user asked for {', '.join(missing)}, but it does not exist: {where}. Save it with "
+                      "write_file now, then run or import the saved file to verify it. Do not claim it was created "
+                      "until a write_file result confirms it.")
         if not reason:
             return False
         t.nudges += 1
@@ -855,8 +884,24 @@ class Chat:
                          "pieces (write_file the first part, then add the rest with edit_file).")
         if name in ("write_file", "edit_file") and not result.startswith(("Hata", "Kullanıcı")):
             t.writes += 1
+            written = tools._path(str(args.get("path", "")))
+            wanted = [f for f in t.missing_files if Path(f).name == written.name and not Path(f).exists()]
+            if wanted:
+                hints.append(f"You saved it to {written}, but the user asked for {wanted[0]} in the current directory "
+                             f"({os.getcwd()}). Write it again with the relative path {wanted[0]}.")
+        key = name + json.dumps(args, sort_keys=True, ensure_ascii=False)
+        t.calls[key] = t.calls.get(key, 0) + 1
+        if t.calls[key] >= 3:
+            hints.append(f"You have made this exact {name} call {t.calls[key]} times in this task. Repeating it gives the "
+                         "same result: change something (fix the code, try another approach) or finish with your answer.")
         if name in RUN_TOOLS and not result.startswith("Kullanıcı"):
             hints += self._command_hints(name, args, result)
+        missing = sorted(f for f in t.missing_files if not Path(f).exists())
+        if name == "run_python" and missing and not result.startswith("Kullanıcı"):
+            t.py_runs += 1
+            if t.py_runs >= 2:
+                hints.append(f"{', '.join(missing)} is still not saved: run_python does not create files. Save your "
+                             "current version with write_file now, then keep testing the saved file.")
         if 0 < remaining <= 2 and not self.interactive:
             hints.append(f"Only {remaining} step(s) left before the step limit: finish the task now (make sure the "
                          "final files are saved and verified); do not start anything new.")
@@ -870,6 +915,9 @@ class Chat:
         t = self.turn
         if not command_failed(result):
             t.same_error, t.last_error = 0, ""
+            if result.strip() == "çıkış kodu: 0":
+                return ["It succeeded but printed nothing. If you expected output, the code never prints it (for "
+                        "example a function whose result is not passed to print()); fix the code instead of rerunning it."]
             return []
         if self.think_mode == "auto" and self.can_think() and not t.think_all:
             t.think_next = 1
@@ -991,7 +1039,7 @@ class Chat:
             "model": self.model, "messages": self.messages, "stream": True,
             "stream_options": {"include_usage": True},
         }
-        if self.use_tools:
+        if self.tools_on():
             kwargs["tools"] = tools.schemas()
         if not self.thinking and self.can_think():
             kwargs["reasoning_effort"] = "none"  # LM Studio'da düşünmeyi gerçekten kapatan ayar
@@ -1188,7 +1236,9 @@ class Chat:
                 raise ValueError("JSON nesnesi bekleniyordu")
         except ValueError as e:
             self._tool_header(name, {}, ok=False)
-            self._note("└ ✗ argümanlar okunamadı", "red")
+            cut = {None: "çağrı yarıda kesildi (cevap akışı tamamlanmadı)",
+                   "length": "çağrı çıktı uzunluk sınırında kesildi"}.get(self.last_finish, "argümanlar okunamadı")
+            self._note(f"└ ✗ {cut}", "red")
             return f"Hata: argümanlar geçerli bir JSON nesnesi değil ({e})."
         if tool is None:
             self._tool_header(name, {}, ok=False)
@@ -1329,12 +1379,14 @@ class Chat:
         for col in ("", "Model", "Durum", "Bağlam", ""):
             table.add_column(col)
         for alias, p in self.cfg.get("presets", {}).items():
-            m = info.get(p["model"], {})
+            m = info.get(p.get("model"), {})
             loaded = m.get("state") == "loaded"
             glyph, color, _ = PIECES.get(alias, DEFAULT_PIECE)
+            state = ("[dim]boş yuva[/]" if not p.get("model") else "[green]yüklü[/]" if loaded
+                     else "[dim]yüklü değil[/]" if m else "[red]bulunamadı[/]")
             table.add_row(
-                "→" if p["model"] == self.model else "", Text(f"{glyph} {alias}", style=f"bold {color}"),
-                "[green]yüklü[/]" if loaded else ("[dim]yüklü değil[/]" if m else "[red]bulunamadı[/]"),
+                "→" if p.get("model") and p["model"] == self.model else "",
+                Text(f"{glyph} {alias}", style=f"bold {color}"), state,
                 str(m.get("loaded_context_length") or "") if loaded else "",
                 f"[dim]{escape(p.get('desc', ''))}[/]",
             )
@@ -1353,6 +1405,9 @@ class Chat:
             console.print(table)
             return
         p = presets[name]
+        if not p.get("model"):
+            console.print(f"[yellow]{escape(name)} boş bir yuva; önce config.json'da ona bir model ata.[/]")
+            return
         glyph, color, _ = PIECES.get(name, DEFAULT_PIECE)
         spinner = Spinner(glyph, color, self.animate)
         spinner.set(f"{name} yükleniyor", "diğer modeller boşaltılıyor")
@@ -1378,11 +1433,18 @@ class Chat:
         return r.returncode == 0
 
     def _think_state(self) -> str:
+        if self._preset().get("thinking") == "always":
+            return "her zaman"
         return {"on": "açık", "off": "kapalı", "auto": "otomatik"}[self.think_mode] if self.can_think() else "yok"
+
+    def _tools_state(self) -> str:
+        if self.use_tools and not self.tools_on():
+            return "yok"
+        return "açık" if self.use_tools else "kapalı"
 
     def toolbar(self) -> FormattedText:
         glyph, color, _ = self.piece()
-        parts = [f"düşünme {self._think_state()}", f"araçlar {'açık' if self.use_tools else 'kapalı'}",
+        parts = [f"düşünme {self._think_state()}", f"araçlar {self._tools_state()}",
                  f"onay {'otomatik' if self.auto else 'sorulur'}"]
         limit = self._context_limit()
         if limit and self.last_tokens is not None:
@@ -1431,7 +1493,7 @@ def banner(chat: Chat) -> None:
     name = chat.name() if chat.model else "model yok · /load queen ile yükle"
     info = Text.assemble(("  ", ""), (f"{glyph} {name}", f"bold {color}"))
     for part in ([f"bağlam {chat.ctx // 1024}k"] if chat.ctx else []) + [
-            f"düşünme {chat._think_state()}", f"araçlar {'açık' if chat.use_tools else 'kapalı'}"]:
+            f"düşünme {chat._think_state()}", f"araçlar {chat._tools_state()}"]:
         info.append(f"  ·  {part}", style=MUTED)
     console.print(info)
     console.print(Text(f"  {os.getcwd()}", style=MUTED))
@@ -1478,7 +1540,7 @@ def repl(chat: Chat) -> None:
 def main() -> int:
     ap = argparse.ArgumentParser(prog="gambit", description="Gambit CLI: yerel modellerle terminal asistanı.")
     ap.add_argument("prompt", nargs="*", help="tek seferlik soru; verilmezse sohbet modu açılır")
-    ap.add_argument("-m", "--model", help="kullanılacak model: knight, rook, queen, bishop, king "
+    ap.add_argument("-m", "--model", help="kullanılacak model: bishop, rook, queen, king "
                                           "(varsayılan: LM Studio'da yüklü olan)")
     ap.add_argument("--url", help="sunucu adresi (varsayılan: config.json'daki base_url)")
     ap.add_argument("--no-tools", action="store_true", help="araçları kapat, sadece sohbet")

@@ -44,7 +44,7 @@ import grading  # noqa: E402
 from core import TASKS, Trace  # noqa: E402
 
 RESULTS = HERE / "results"
-DEFAULT_PLAN = "knight:off,rook:off,queen:off,bishop:off,knight:auto,queen:auto,bishop:auto,king:off"
+DEFAULT_PLAN = "bishop:off,rook:off,queen:off,bishop:auto,queen:auto,king:off"
 MAX_TOKENS = {"off": 8192, "auto": 12288}  # tek model çağrısı başına üst sınır (kaçak üretime karşı)
 SEED = 42
 MAX_STEPS = 14  # görev başına en fazla model adımı (gambit'te max_steps)
@@ -294,8 +294,15 @@ def grade_safely(task: core.Task, sandbox: Path, final: str, trace: Trace) -> tu
         return 0.0, f"notlandırıcı hatası: {type(e).__name__}: {e}"[:300], [["notlandırıcı", 1, 0, traceback.format_exc()[-400:]]]
 
 
+def run_dir(model_id: str, mode: str) -> str:
+    """Cevap ve sandbox klasörünün adı. Hazır ayar adı değil model kimliği: adlar yeniden atanınca
+    (eski knight bugün bishop) yeni modelin koşusu eskisinin kayıtlarını ezmesin."""
+    name = re.sub(r"\.gguf$", "", model_id.rstrip("/").rsplit("/", 1)[-1])
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", name) + f"__{mode}"
+
+
 def attempt(client, cfg: dict, preset: str, model_id: str, ctx: int | None, mode: str, task: core.Task) -> dict:
-    sandbox = RESULTS / "sandboxes" / f"{preset}__{mode}" / task.id
+    sandbox = RESULTS / "sandboxes" / run_dir(model_id, mode) / task.id
     fresh_dir(sandbox)
     task.setup(sandbox)
     completions = _Completions(client.chat.completions, {"max_tokens": MAX_TOKENS[mode], "seed": SEED})
@@ -343,7 +350,7 @@ def attempt(client, cfg: dict, preset: str, model_id: str, ctx: int | None, mode
         "tool_calls": len(chat.events), "timed_out": chat.timed_out, "server_error": chat.server_error,
         "crash": crash, "time": datetime.now().isoformat(timespec="seconds"),
     }
-    folder = RESULTS / "responses" / f"{preset}__{mode}"
+    folder = RESULTS / "responses" / run_dir(model_id, mode)
     folder.mkdir(parents=True, exist_ok=True)
     (folder / f"{task.id}.json").write_text(json.dumps({
         "result": result, "final": final, "events": chat.events, "messages": chat.messages,
@@ -392,18 +399,19 @@ def run_plan(plan: list[tuple[str, str]], tasks: list[core.Task]) -> int:
         log("LM Studio sunucusu başlatılamadı.")
         return 1
     results_file = RESULTS / "results.jsonl"
-    done = {(r["preset"], r["mode"], r["task"]) for r in load_jsonl(results_file)}
+    # Model kimliğiyle eşlenir: hazır ayar adları değişebilir (eski knight bugün bishop), modelin sonucu ise aynı kalır
+    done = {(r.get("model_id"), r["mode"], r["task"]) for r in load_jsonl(results_file)}
     current = None
     model_id = ctx = None
     total_started = time.perf_counter()
     completed = False
     try:
         for ci, (preset, mode) in enumerate(plan, 1):
-            todo = [t for t in tasks if (preset, mode, t.id) not in done]
+            todo = [t for t in tasks if (cfg["presets"].get(preset, {}).get("model"), mode, t.id) not in done]
             if not todo:
                 continue
-            if preset not in cfg["presets"]:
-                log(f"!!! bilinmeyen hazır ayar: {preset}")
+            if not cfg["presets"].get(preset, {}).get("model"):
+                log(f"!!! bilinmeyen ya da boş hazır ayar: {preset}")
                 continue
             if current != preset:
                 log(f"\n=== {preset} yükleniyor…")
@@ -513,11 +521,17 @@ def regrade() -> int:
     changed = 0
     for r in results:
         t = by_id.get(r["task"])
-        saved = RESULTS / "responses" / f"{r['preset']}__{r['mode']}" / f"{r['task']}.json"
-        if not t or not saved.is_file():
+        if not t:
             continue
-        data = json.loads(saved.read_text(encoding="utf-8"))
-        sandbox = RESULTS / "sandboxes" / f"{r['preset']}__{r['mode']}" / t.id
+        # önce model kimliğine göre klasör; yoksa eski düzen (hazır ayar adı), ama yalnızca kayıt aynı modele aitse
+        for folder in (run_dir(r.get("model_id") or "", r["mode"]), f"{r['preset']}__{r['mode']}"):
+            saved = RESULTS / "responses" / folder / f"{r['task']}.json"
+            data = json.loads(saved.read_text(encoding="utf-8")) if saved.is_file() else None
+            if data and data.get("result", {}).get("model_id") == r.get("model_id"):
+                break
+        else:
+            continue
+        sandbox = RESULTS / "sandboxes" / folder / t.id
         score, detail, items = grade_safely(t, sandbox, data.get("final", ""), Trace(events=data.get("events", []),
                                                                                        final=data.get("final", "")))
         if abs(round(score, 4) - r["score"]) > 1e-6:

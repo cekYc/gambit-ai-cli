@@ -114,7 +114,7 @@ def write_md(path: Path, configs: list[dict], rows: list[dict], partial: list[di
               " durumlar çarpan cezası alır.",
               "- Kod/SQL görevleri gizli testlerle (SQL ayrıca farklı verili gizli bir veritabanında) puanlanır.",
               "- Düşünülen adım: düşünmenin açık olduğu model çağrısı / toplam çağrı (otomatik modda gambit'in kendi kuralı).",
-              "- Ayrıntılı notlar ve her görevin tam dökümü: `responses/<yapılandırma>/<görev>.json` ve `.log`.", ""]
+              "- Ayrıntılı notlar ve her görevin tam dökümü: `responses/<model>__<mod>/<görev>.json` ve `.log`.", ""]
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
