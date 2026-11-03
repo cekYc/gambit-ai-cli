@@ -121,10 +121,13 @@ Yerel modellerin benchmark'ta (`benchmark/v2`) en sık takıldığı durumlar CL
 | "Şimdi testleri çalıştırıyorum:" deyip durdu | Adımı araçla yapmasını ya da özetle bitirmesini ister |
 | Hiç araç kullanmadan "oluşturdum, test ettim" dedi | Gerçekten yapmasını ya da yapmadığını söylemesini ister |
 | İstenen dosyayı yazmayıp kodu sohbete yapıştırdı | Dosyaya kaydetmesini ister |
+| `write_file` çağrısı `path` olmadan geldi (Gemma 4 26B ve Qwen3.8 27B uzun içerikte bunu yapıp aynı çağrıyı tekrarlıyordu) | `path`'i başa yazmasını ister; tekrarlanırsa ve kullanıcı tek bir dosya istediyse içeriği o dosyaya kaydeder ve modele söyler |
 | Cevap uzunluk sınırında kesildi | Kaldığı yerden devam etmesini ister |
-| Aynı komut aynı hatayla tekrar tekrar başarısız | Sonuca not ekler: PowerShell tırnak hatası, kurulu olmayan program (ör. `sqlite3`), `.schema` gibi SQL olmayan komutlar, "bu komut zaten başarısız oldu", "3 kez aynı hata: yöntemi değiştir" |
+| Hep düşünen model (`thinking: "always"`) daha cevap yazmadan düşünürken kesildi | Düşüncesinin son kısmını geçmişte tutar ve baştan başlamadan cevabı yazmasını ister |
+| Aynı komut aynı hatayla tekrar tekrar başarısız | Sonuca not ekler: PowerShell tırnak hatası, kurulu olmayan program (ör. `sqlite3`), `.schema` gibi SQL olmayan komutlar, "3 kez aynı hata: yöntemi değiştir" |
+| Başarısız bir komutu, arada hiçbir dosya ya da komut değişmeden aynen tekrar istedi | Çalıştırmaz; aynı hatayı vereceğini ve önce nedeni düzeltmesini söyler |
 | Düşünme uzayıp gidiyor | `think_budget` token'ı aşınca o adım düşünmeden tekrarlanır |
-| Tek seferlik modda adım sınırı yaklaşıyor | Son iki adımda modele bitirmeye odaklanmasını söyler |
+| Tek seferlik modda adım sınırı yaklaşıyor | 5 adım kala testleri kısa tutmasını, son iki adımda bitirmeye odaklanmasını söyler |
 
 Bu uyarılar bir turda en fazla iki kez yapılır; ekranda `↻` ve `↳` ile gösterilir.
 

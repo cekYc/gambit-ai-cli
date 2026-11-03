@@ -49,6 +49,10 @@ MAX_TOKENS = {"off": 8192, "auto": 12288}  # tek model çağrısı başına üst
 SEED = 42
 MAX_STEPS = 14  # görev başına en fazla model adımı (gambit'te max_steps)
 BUDGET = {True: 480, False: 300}  # görev başına süre sınırı (sn): araçlı / araçsız; tüm modellere aynı
+# --no-time-limit: yavaş modellerin hızdan değil yetenekten ölçülmesi için süre sınırı yok. Döngüyü adım sınırı,
+# CLI'nin tekrar sınırı ve başarısız komutu tekrar çalıştırmaması keser; bu tavan yalnızca bir güvenlik ağı.
+NO_LIMIT_CAP = 2 * 3600
+NO_LIMIT = False
 READ_TOOLS = {"read_file", "list_dir", "search_files"}
 
 
@@ -272,7 +276,8 @@ def supports_thinking(client: OpenAI, model: str) -> bool:
     try:
         r = client.chat.completions.create(model=model, max_tokens=512, seed=SEED,
                                            messages=[{"role": "user", "content": "2+2 kaç eder? Tek kelimeyle cevap ver."}])
-    except Exception:
+    except Exception as e:  # sessizce "desteklemiyor" demesin: otomatik mod koşusu boşuna atlanır
+        log(f"    düşünme desteği sınanamadı: {type(e).__name__}: {str(e)[:150]}")
         return False
     msg = r.choices[0].message
     return bool((getattr(msg, "reasoning_content", None) or "").strip()) or "<think>" in (msg.content or "")
@@ -305,7 +310,9 @@ def attempt(client, cfg: dict, preset: str, model_id: str, ctx: int | None, mode
     sandbox = RESULTS / "sandboxes" / run_dir(model_id, mode) / task.id
     fresh_dir(sandbox)
     task.setup(sandbox)
-    completions = _Completions(client.chat.completions, {"max_tokens": MAX_TOKENS[mode], "seed": SEED})
+    # Hep düşünen modeller (thinking: "always") kapalı modda da düşünür: otomatik moddaki çıktı payını alır
+    always = cfg["presets"].get(preset, {}).get("thinking") == "always"
+    completions = _Completions(client.chat.completions, {"max_tokens": MAX_TOKENS["auto" if always else mode], "seed": SEED})
     capped = types.SimpleNamespace(chat=types.SimpleNamespace(completions=completions))
     args = argparse.Namespace(no_tools=not task.tools, think=False if mode == "off" else None, show_think=False,
                               yes=False, auto_think=mode == "auto")
@@ -317,7 +324,7 @@ def attempt(client, cfg: dict, preset: str, model_id: str, ctx: int | None, mode
     crash = ""
     try:
         chat = GambitBench(capped, {**cfg, "max_steps": MAX_STEPS}, cfg["base_url"], args, sandbox=sandbox,
-                           deadline=started + BUDGET[task.tools])
+                           deadline=started + (NO_LIMIT_CAP if NO_LIMIT else BUDGET[task.tools]))
         completions.bench = chat
         chat.model, chat.ctx = model_id, ctx
         chat.messages[0]["content"] = chat.system_prompt()  # gerçek CLI'daki gibi: mod adı (knight, queen...) istemde
@@ -349,6 +356,7 @@ def attempt(client, cfg: dict, preset: str, model_id: str, ctx: int | None, mode
         "prompt_tokens": chat.prompt_tokens, "calls": chat.calls, "think_calls": chat.think_calls,
         "tool_calls": len(chat.events), "timed_out": chat.timed_out, "server_error": chat.server_error,
         "crash": crash, "time": datetime.now().isoformat(timespec="seconds"),
+        "time_limit": NO_LIMIT_CAP if NO_LIMIT else BUDGET[task.tools],
     }
     folder = RESULTS / "responses" / run_dir(model_id, mode)
     folder.mkdir(parents=True, exist_ok=True)
@@ -547,7 +555,7 @@ def regrade() -> int:
 
 
 def main() -> int:
-    global RESULTS
+    global RESULTS, NO_LIMIT
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--plan", default=DEFAULT_PLAN, help="hazır_ayar:mod listesi (mod: off | auto)")
     ap.add_argument("--only", default="", help="yalnızca id'si bu öneklerle başlayan görevler (virgülle)")
@@ -555,8 +563,11 @@ def main() -> int:
     ap.add_argument("--regrade", action="store_true")
     ap.add_argument("--report", action="store_true")
     ap.add_argument("--out", default=str(HERE / "results"), help="sonuç klasörü")
+    ap.add_argument("--no-time-limit", action="store_true",
+                    help=f"görev süre sınırını kaldır (güvenlik tavanı {NO_LIMIT_CAP // 3600} saat)")
     args = ap.parse_args()
     RESULTS = Path(args.out).resolve()
+    NO_LIMIT = args.no_time_limit
     RESULTS.mkdir(parents=True, exist_ok=True)
     prefixes = tuple(p for p in args.only.split(",") if p)
     tasks = [t for t in TASKS if not prefixes or t.id.startswith(prefixes)]
@@ -575,7 +586,7 @@ def main() -> int:
             return 1
         plan.append((preset, mode))
     log(f"Gambit Bench v2 · {len(tasks)} görev · plan: {', '.join(f'{p}/{m}' for p, m in plan)} · "
-        f"{datetime.now():%Y-%m-%d %H:%M}")
+        f"{datetime.now():%Y-%m-%d %H:%M}" + (" · süre sınırı yok" if NO_LIMIT else ""))
     return run_plan(plan, tasks)
 
 

@@ -21,6 +21,17 @@ from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
+try:
+    import jiter  # noqa: F401
+except ImportError:
+    # Windows Akıllı Uygulama Denetimi jiter'in imzasız DLL'ini engelleyebiliyor; openai onu yalnızca .stream()
+    # yardımcısı için yüklüyor, gambit akışı kendisi okuduğu için gerekmez. Engellenen DLL'i yüklemeyen bir yedek.
+    import types as _types
+
+    _jiter = _types.ModuleType("jiter")
+    _jiter.from_json = lambda data, partial_mode=False, **_: json.loads(data)
+    sys.modules["jiter"] = _jiter
+
 from openai import APIConnectionError, APIStatusError, OpenAI
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import WordCompleter
@@ -77,6 +88,9 @@ NOT_FOUND = re.compile(r"['‘]([^'’\n]+)['’] (?:terimi bir cmdlet|is not re
                        re.M)
 SQLITE_DOT = re.compile(r"""execute\w*\(\s*[rRbBuU]?(?:'{1,3}|"{1,3})\s*\.(?:schema|tables|headers|mode|indexes)\b""")
 RUN_TOOLS = ("run_command", "run_python")
+THOUGHT_CUT = "[My unfinished reasoning, cut off by the output length limit before I wrote an answer:]"
+THOUGHT_KEEP = 3500  # düşünürken kesilen modelin düşüncesinden geçmişte tutulan son karakterler
+NOT_RERUN = "Not executed:"  # başarısız komutun değişmeden tekrarı çalıştırılmadığında sonucun başı
 COMPACT_MARK = "[… Gambit: bağlam için kısaltıldı"
 CHARS_PER_TOKEN = 3.2
 LOOP_LIMIT = 5  # aynı araç çağrısı (ad + argümanlar) bir turda bu kadar tekrarlanırsa tur durdurulur
@@ -165,6 +179,11 @@ def command_failed(result: str) -> bool:
     first = result.split("\n", 1)[0]
     m = re.match(r"çıkış kodu: (-?\d+)", first)
     return bool(m and m.group(1) != "0") or tools.STDERR_WARNING in first or result.startswith("Hata:")
+
+
+def _command_key(args: dict) -> str:
+    """Komutu ya da Python kodunu boşluk farklarından bağımsız karşılaştırmak için anahtar."""
+    return " ".join(str(args.get("command") or args.get("code") or "").split())
 
 
 def _partial_tail(s: str, tag: str) -> int:
@@ -581,7 +600,11 @@ class Turn:
     think_next: int = 0  # sonraki şu kadar adımda düşün
     no_think_next: bool = False  # düşünme bütçesi aşıldı: sonraki adım düşünmeden
     force_compact: bool = False
-    failed_commands: set = field(default_factory=set)
+    failed_commands: dict = field(default_factory=dict)  # başarısız komut -> (o andaki changes, hata satırı)
+    changes: int = 0  # dosya yazma ve komut çalıştırma sayısı: başarısız komutu tekrarlamadan önce bir şey değişti mi
+    thought_cut: int = 0  # düşünürken uzunluk sınırında kesilme sayısı
+    short_tests: bool = False  # adım sınırı yaklaşınca testleri kısa tutması söylendi mi
+    pathless: int = 0  # path'siz gelen write_file çağrısı sayısı
     calls: dict = field(default_factory=dict)  # aynı araç çağrısının (ad + argümanlar) bu turda kaç kez yapıldığı
     last_error: str = ""
     same_error: int = 0
@@ -829,6 +852,13 @@ class Chat:
                                "Your last message contained a malformed tool call, so it was not executed. Call the "
                                "tool again in the correct format; if the task is done, write the result.")
             return True
+        if text.startswith(THOUGHT_CUT) and t.thought_cut <= 2:
+            self._say_to_model("Düşünürken kesildi; düşündüklerinden devam edip cevabı yazması isteniyor.",
+                               "You ran out of output tokens while still thinking, before writing any answer. The end of "
+                               "your reasoning is in your previous message. Do not start over or repeat it: think only "
+                               "briefly, then write your final answer now"
+                               + (" (or make the next tool call)." if self.tools_on() else "."))
+            return True
         if t.nudges >= 2:
             return False
         reason = None
@@ -884,6 +914,7 @@ class Chat:
                          "pieces (write_file the first part, then add the rest with edit_file).")
         if name in ("write_file", "edit_file") and not result.startswith(("Hata", "Kullanıcı")):
             t.writes += 1
+            t.changes += 1
             written = tools._path(str(args.get("path", "")))
             wanted = [f for f in t.missing_files if Path(f).name == written.name and not Path(f).exists()]
             if wanted:
@@ -894,7 +925,8 @@ class Chat:
         if t.calls[key] >= 3:
             hints.append(f"You have made this exact {name} call {t.calls[key]} times in this task. Repeating it gives the "
                          "same result: change something (fix the code, try another approach) or finish with your answer.")
-        if name in RUN_TOOLS and not result.startswith("Kullanıcı"):
+        if name in RUN_TOOLS and not result.startswith(("Kullanıcı", NOT_RERUN)):
+            t.changes += 1
             hints += self._command_hints(name, args, result)
         missing = sorted(f for f in t.missing_files if not Path(f).exists())
         if name == "run_python" and missing and not result.startswith("Kullanıcı"):
@@ -902,6 +934,11 @@ class Chat:
             if t.py_runs >= 2:
                 hints.append(f"{', '.join(missing)} is still not saved: run_python does not create files. Save your "
                              "current version with write_file now, then keep testing the saved file.")
+        if 2 < remaining <= 5 and not self.interactive and not t.short_tests:
+            t.short_tests = True
+            hints.append(f"Only {remaining} steps left before the step limit. From now on keep testing short: one quick "
+                         "run of the saved file with a few checks, no new large test scripts or test suites. Make sure "
+                         "the requested files are saved, then finish with your answer.")
         if 0 < remaining <= 2 and not self.interactive:
             hints.append(f"Only {remaining} step(s) left before the step limit: finish the task now (make sure the "
                          "final files are saved and verified); do not start anything new.")
@@ -913,8 +950,10 @@ class Chat:
 
     def _command_hints(self, name: str, args: dict, result: str) -> list[str]:
         t = self.turn
+        key = _command_key(args)
         if not command_failed(result):
             t.same_error, t.last_error = 0, ""
+            t.failed_commands.pop(key, None)
             if result.strip() == "çıkış kodu: 0":
                 return ["It succeeded but printed nothing. If you expected output, the code never prints it (for "
                         "example a function whose result is not passed to print()); fix the code instead of rerunning it."]
@@ -940,11 +979,10 @@ class Chat:
         if SQLITE_DOT.search(code):
             hints.append("'.schema' and '.tables' are sqlite3 shell commands, not SQL, so they fail in Python. "
                          "Use SELECT name, sql FROM sqlite_master instead.")
-        key = " ".join(code.split())
+        err = _error_line(result)
         if key in t.failed_commands:
             hints.append("This exact command already failed earlier in this task. Do not repeat it; change the approach.")
-        t.failed_commands.add(key)
-        err = _error_line(result)
+        t.failed_commands[key] = (t.changes, err)
         t.same_error = t.same_error + 1 if err and err == t.last_error else 1
         t.last_error = err
         if t.same_error >= 3:
@@ -1139,6 +1177,17 @@ class Chat:
             # istekte 500 veriyor, o yüzden geçmişte "{}" durur
             tool_calls.append({"id": cid, "type": "function", "function": {"name": c["name"], "arguments": fixed or raw}})
             history.append({"id": cid, "type": "function", "function": {"name": c["name"], "arguments": fixed or "{}"}})
+        if not out.answer and not tool_calls and out.thought.strip() and self.last_finish == "length":
+            # Düşünürken kesildi: düşüncenin sonu geçmişte kalsın ki model baştan başlamasın ve sıfırdan uydurmasın;
+            # cevap gibi gösterilmez (_nudge modelden bunun üzerine cevabı yazmasını ister)
+            thought = out.thought.strip()
+            self.turn.thought_cut += 1
+            self._note(f"Model düşünürken çıktı sınırında kesildi ({out.think_tokens} token); düşüncesinin son kısmı "
+                       "saklanıyor.", "yellow")
+            self._save_assistant(f"{THOUGHT_CUT}\n" + ("…" if len(thought) > THOUGHT_KEEP else "")
+                                 + thought[-THOUGHT_KEEP:], [])
+            self._print_stats(usage, first)
+            return []
         if not out.answer and not tool_calls and out.thought.strip():
             # Bazı modeller (ör. Qwen3.5) araç kullandıktan sonra cevabın tamamını düşünme kısmına yazıyor
             out.answer = out.thought.strip()
@@ -1244,12 +1293,40 @@ class Chat:
             self._tool_header(name, {}, ok=False)
             self._note("└ ✗ bilinmeyen araç", "red")
             return f"Hata: '{name}' adında bir araç yok. Kullanılabilir araçlar: {', '.join(tools.TOOLS)}"
+        filled = ""
+        if name == "write_file" and "path" not in args and args.get("content") and self.turn:
+            # Bazı modeller (Gemma 4 26B, Qwen3.8 27B) uzun içerikte path'i hiç göndermiyor ve aynı çağrıyı tekrarlıyor
+            t = self.turn
+            t.pathless += 1
+            # kullanıcının bu turda istediği dosyalar; ilk kayıttan sonra da (dosya artık varken) aynı hedef geçerli
+            wanted = sorted(t.missing_files)
+            if len(wanted) == 1 and t.pathless >= 2:
+                args["path"] = filled = wanted[0]
+                self._note(f"write_file yine path'siz geldi; kullanıcının istediği tek dosya olan {filled} dosyasına "
+                           "yazılıyor.", "yellow")
+            else:
+                self._tool_header(name, args, ok=False)
+                self._note("└ ✗ eksik argüman: path", "red")
+                example = wanted[0] if len(wanted) == 1 else "dosya.py"
+                return ('Hata: write_file call arrived without the "path" argument (only "content"), so nothing was '
+                        f'saved. Call write_file again and put "path" FIRST, before "content": '
+                        f'{{"path": "{example}", "content": "..."}}.'
+                        + (f" The user asked for {', '.join(wanted)}." if wanted else ""))
         if missing := [k for k in tool.parameters.get("required", []) if k not in args]:
             self._tool_header(name, args, ok=False)
             self._note(f"└ ✗ eksik argüman: {', '.join(missing)}", "red")
             return (f"Hata: {name} için zorunlu argüman eksik: {', '.join(missing)}. Gönderilen argümanlar: "
                     f"{', '.join(args) or 'yok'}. Aracı tüm zorunlu argümanlarla tekrar çağır.")
 
+        if name in RUN_TOOLS and (prev := self.turn.failed_commands.get(_command_key(args))) \
+                and prev[0] == self.turn.changes:
+            # Arada hiçbir dosya ya da komut değişmedi: aynı komut aynı hatayı verir, çalıştırmanın anlamı yok
+            self._tool_header(name, args, ok=False)
+            self._note("└ ✗ çalıştırılmadı: aynı komut az önce aynı durumda başarısız oldu", "yellow")
+            return (f"{NOT_RERUN} this exact {'code' if name == 'run_python' else 'command'} already failed and nothing "
+                    f"has changed since (no file written, no other command run), so it would fail the same way. Last "
+                    f"error: {prev[1] or 'see the earlier result'}. Fix the cause first (edit the file or change the "
+                    "code/command), or use a different approach.")
         self._tool_header(name, args)
         started = time.perf_counter()
         try:
@@ -1269,6 +1346,9 @@ class Chat:
         except Exception as e:
             result = f"Hata: {type(e).__name__}: {e}"
         self._show_result(tool, name, result, time.perf_counter() - started)
+        if filled:
+            result += (f'\n\nNote: your write_file call again had no "path", so it was saved to {filled}, the file the '
+                       'user asked for. Always include "path" (write it first).')
         return tools.truncate(result, self._output_limit())
 
     def _output_limit(self) -> int:
