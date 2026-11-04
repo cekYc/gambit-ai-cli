@@ -1,6 +1,6 @@
 # Gambit Bench v2 sonuçları
 
-_Güncelleme: 2026-11-03 12:28 · 39 görev · toplam ağırlık 116 · her görev gambit-cli'nin ajan döngüsüyle (sistem istemi, araçlar, düşünme modu) çalıştırıldı._
+_Güncelleme: 2026-11-04 16:11 · 39 görev · toplam ağırlık 116 · her görev gambit-cli'nin ajan döngüsüyle (sistem istemi, araçlar, düşünme modu) çalıştırıldı._
 
 **Genel puan zorluk ağırlıklıdır** (kolay ×1, orta ×2, zor ×3, çok zor ×4); her görev rubrikle kısmi puan alır.
 
@@ -9,7 +9,7 @@ _Güncelleme: 2026-11-03 12:28 · 39 görev · toplam ağırlık 116 · her gör
 | # | Yapılandırma | Model | Genel (ağırlıklı) | Basit ort. | Zor+ görevler | Tam puan / sıfır | Süre (dk) | Token (bin) | Düşünülen adım | Süre aşımı | Görev |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 
-_Yarım kalan ve sıralamaya alınmayan yapılandırmalar: queen · kapalı (11/39 görev), rook · kapalı (7/39 görev)._
+_Yarım kalan ve sıralamaya alınmayan yapılandırmalar: king · kapalı (34/39 görev), queen · otomatik (18/39 görev), queen · kapalı (11/39 görev), rook · kapalı (7/39 görev)._
 
 ## Kategoriler (kategori içinde ağırlıklı)
 

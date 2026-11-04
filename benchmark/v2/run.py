@@ -53,6 +53,8 @@ BUDGET = {True: 480, False: 300}  # görev başına süre sınırı (sn): araçl
 # CLI'nin tekrar sınırı ve başarısız komutu tekrar çalıştırmaması keser; bu tavan yalnızca bir güvenlik ağı.
 NO_LIMIT_CAP = 2 * 3600
 NO_LIMIT = False
+# --remote: LM Studio yerine uzak (ör. kiralık GPU'daki llama-server) OpenAI uyumlu sunucu; model orada zaten yüklü
+REMOTE = ""
 READ_TOOLS = {"read_file", "list_dir", "search_files"}
 
 
@@ -142,6 +144,9 @@ class _Completions:
         self.inner, self.extra, self.bench = inner, extra, None
 
     def create(self, **kwargs):
+        if REMOTE and kwargs.get("reasoning_effort") == "none":  # llama-server düşünmeyi şablon değişkeniyle kapatır
+            kwargs.pop("reasoning_effort")
+            kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
         return _Guard(self.inner.create(**{**self.extra, **kwargs}), self.bench)
 
 
@@ -356,7 +361,8 @@ def attempt(client, cfg: dict, preset: str, model_id: str, ctx: int | None, mode
         "prompt_tokens": chat.prompt_tokens, "calls": chat.calls, "think_calls": chat.think_calls,
         "tool_calls": len(chat.events), "timed_out": chat.timed_out, "server_error": chat.server_error,
         "crash": crash, "time": datetime.now().isoformat(timespec="seconds"),
-        "time_limit": NO_LIMIT_CAP if NO_LIMIT else BUDGET[task.tools],
+        "time_limit": NO_LIMIT_CAP if NO_LIMIT else BUDGET[task.tools], "seed": SEED,
+        **({"host": "uzak"} if REMOTE else {}),
     }
     folder = RESULTS / "responses" / run_dir(model_id, mode)
     folder.mkdir(parents=True, exist_ok=True)
@@ -401,9 +407,20 @@ def build_report() -> None:
 
 def run_plan(plan: list[tuple[str, str]], tasks: list[core.Task]) -> int:
     cfg = ai.load_config()
-    client = OpenAI(base_url=cfg["base_url"], api_key=cfg.get("api_key") or "lm-studio", timeout=900, max_retries=0)
+    if REMOTE:
+        cfg["base_url"] = REMOTE
+    key_file = HERE / "uzak_anahtar.txt"  # git'e girmez; anahtar sohbete yazılmasın diye dosyadan okunur
+    key = (os.environ.get("GAMBIT_REMOTE_KEY") or (key_file.read_text(encoding="utf-8").strip()
+                                                     if key_file.is_file() else "")) if REMOTE else cfg.get("api_key")
+    client = OpenAI(base_url=cfg["base_url"], api_key=key or "lm-studio", timeout=900, max_retries=0)
     keep_awake()
-    if not ensure_server(cfg):
+    if REMOTE:
+        try:
+            log(f"uzak sunucu: {REMOTE} · modeller: {[m.id for m in client.models.list().data]}")
+        except Exception as e:
+            log(f"Uzak sunucuya bağlanılamadı ({REMOTE}): {type(e).__name__}: {str(e)[:200]}")
+            return 1
+    elif not ensure_server(cfg):
         log("LM Studio sunucusu başlatılamadı.")
         return 1
     results_file = RESULTS / "results.jsonl"
@@ -425,7 +442,12 @@ def run_plan(plan: list[tuple[str, str]], tasks: list[core.Task]) -> int:
                 log(f"\n=== {preset} yükleniyor…")
                 try:
                     t0 = time.perf_counter()
-                    model_id, ctx = load_preset(cfg, preset)
+                    if REMOTE:  # uzakta tek model zaten yüklü; kayıtlar yerel koşularla eşleşsin diye aynı kimlik
+                        pargs = cfg["presets"][preset].get("args", [])
+                        model_id = cfg["presets"][preset]["model"]
+                        ctx = int(pargs[pargs.index("-c") + 1]) if "-c" in pargs else None
+                    else:
+                        model_id, ctx = load_preset(cfg, preset)
                     log(f"=== {preset} hazır ({time.perf_counter() - t0:.0f} sn, bağlam {ctx})")
                     current = preset
                 except RuntimeError as e:
@@ -468,8 +490,9 @@ def run_plan(plan: list[tuple[str, str]], tasks: list[core.Task]) -> int:
         log("\nTüm sonuçlar güncel notlandırıcılarla yeniden puanlanıyor…")
         regrade()
     finally:
-        log("\nLM Studio'daki modeller boşaltılıyor…")
-        lms(cfg, "unload", "--all", timeout=120)
+        if not REMOTE:
+            log("\nLM Studio'daki modeller boşaltılıyor…")
+            lms(cfg, "unload", "--all", timeout=120)
         build_report()
         write_status(yapilandirma="bitti" if completed else "durdu",
                      toplam_dk=round((time.perf_counter() - total_started) / 60, 1))
@@ -555,7 +578,7 @@ def regrade() -> int:
 
 
 def main() -> int:
-    global RESULTS, NO_LIMIT
+    global RESULTS, NO_LIMIT, REMOTE, SEED
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--plan", default=DEFAULT_PLAN, help="hazır_ayar:mod listesi (mod: off | auto)")
     ap.add_argument("--only", default="", help="yalnızca id'si bu öneklerle başlayan görevler (virgülle)")
@@ -565,9 +588,12 @@ def main() -> int:
     ap.add_argument("--out", default=str(HERE / "results"), help="sonuç klasörü")
     ap.add_argument("--no-time-limit", action="store_true",
                     help=f"görev süre sınırını kaldır (güvenlik tavanı {NO_LIMIT_CAP // 3600} saat)")
+    ap.add_argument("--remote", default="", help="uzak OpenAI uyumlu sunucu adresi (…/v1); anahtar GAMBIT_REMOTE_KEY'de")
+    ap.add_argument("--seed", type=int, default=SEED, help="örnekleme tohumu; tekrar turlarında farklı ver")
     args = ap.parse_args()
     RESULTS = Path(args.out).resolve()
     NO_LIMIT = args.no_time_limit
+    REMOTE, SEED = args.remote.rstrip("/"), args.seed
     RESULTS.mkdir(parents=True, exist_ok=True)
     prefixes = tuple(p for p in args.only.split(",") if p)
     tasks = [t for t in TASKS if not prefixes or t.id.startswith(prefixes)]
@@ -586,7 +612,8 @@ def main() -> int:
             return 1
         plan.append((preset, mode))
     log(f"Gambit Bench v2 · {len(tasks)} görev · plan: {', '.join(f'{p}/{m}' for p, m in plan)} · "
-        f"{datetime.now():%Y-%m-%d %H:%M}" + (" · süre sınırı yok" if NO_LIMIT else ""))
+        f"{datetime.now():%Y-%m-%d %H:%M}" + (" · süre sınırı yok" if NO_LIMIT else "")
+        + (f" · uzak: {REMOTE}" if REMOTE else "") + (f" · seed {SEED}" if SEED != 42 else ""))
     return run_plan(plan, tasks)
 
 
