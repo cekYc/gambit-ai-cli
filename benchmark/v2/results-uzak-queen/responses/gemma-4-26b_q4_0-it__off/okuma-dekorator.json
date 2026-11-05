@@ -1,0 +1,51 @@
+{
+ "result": {
+  "preset": "queen",
+  "model_id": "google/gemma-4-26b-a4b-it-qat-q4_0-gguf/gemma-4-26b_q4_0-it.gguf",
+  "mode": "off",
+  "task": "okuma-dekorator",
+  "category": "Kod okuma",
+  "level": 3,
+  "weight": 3.0,
+  "score": 0.7123,
+  "detail": "eksik: çıktı satırları (0.71) | 1. satır: beklenen '13 topla', cevap '12 topla'; 2. satır: beklenen \"['tanim:ic:topla', 'tanim:dis:topla', 'cagri:dis', 'cagri:ic']\", cevap \"['tanim:ic:topla', 'tanim:dis:sarmal', 'cagri:dis', 'cagri:ic', 'topla']\"",
+  "notes": "",
+  "items": [
+   [
+    "çıktı satırları",
+    1,
+    0.7123,
+    ""
+   ]
+  ],
+  "wall": 4.6,
+  "tokens": 916,
+  "prompt_tokens": 494,
+  "calls": 1,
+  "think_calls": 0,
+  "tool_calls": 0,
+  "timed_out": false,
+  "server_error": "",
+  "crash": "",
+  "time": "2026-11-04T21:40:47",
+  "time_limit": 7200,
+  "seed": 42,
+  "host": "uzak"
+ },
+ "final": "Kodun adım adım analizi şu şekildedir:\n\n1.  **Dekoratörler (`topla` fonksiyonu):**\n    *   `@izle(\"dis\")` en dıştaki dekoratördür.\n    *   `@izle(\"ic\")` ise `topla` fonksiyonuna daha yakın olan ikinci dekoratördür.\n    *   Tanımlama anında (import/definition sırasında):\n        *   `@izle(\"ic\")` çalışır: `kayit` listesine `\"tanim:ic:topla\"` eklenir.\n        *   `@izle(\"dis\")` çalışır: `kayit` listesine `\"tanim:dis:sarmal\"` eklenir (Çünkü `@functools.wraps` kullanılsa bile, `sarmal` fonksiyonu bir üst katmandaki fonksiyonun ismini `topla` olarak ayarlar ama `izle(\"dis\")` fonksiyonunun sarmaladığı şey zaten `izle(\"ic\")` tarafından dönen `sarmal` fonksiyonudur). Ancak Python'da dekoratörler yukarıdan aşağı çalışır:\n            *   `topla` fonksiyonu önce `izle(\"ic\")` ile sarmalanır. `kayit` -> `['tanim:ic:topla']`.\n            *   Ardından bu yeni fonksiyon `izle(\"dis\")` ile sarmalanır. `kayit` -> `['tanim:ic:topla', 'tanim:dis:sarmal']`.\n    *   `topla(1)` çağrısı:\n        *   `dis` sarmalı çalışır: `kayit` -> `[..., 'cagri:dis']`.\n        *   `ic` sarmalı çalışır: `kayit` -> `[..., 'cagri:ic']`.\n        *   `topla(1, 10)` asıl fonksiyonu `1 + 10 + 1` (her sarmal +1 ekler) sonucunu `12` olarak döndürür.\n    *   `topla.__name__` değeri `\"topla\"`dır (wraps sayesinde).\n\n2.  **Varsayılan Değer (Mutable Default Argument):**\n    *   `ekle(x, liste=[])` fonksiyonundaki `liste` nesnesi bellekte bir kez oluşturulur.\n    *   `ekle(1)` -> `liste` artık `[1]`, döner `1`.\n    *   `ekle(2)` -> `liste` artık `[1, 2]`, döner `2`.\n    *   `ekle(3, [])` -> Yeni bir liste (`[]`) gönderildiği için asıl `liste` etkilenmez, yeni liste `[3]` olur, döner `1`.\n    *   `ekle(4)` -> Asıl `liste` artık `[1, 2, 4]`, döner `3`.\n\n3.  **Lambda ve Kapsam (Late Binding):**\n    *   `carpanlar` sözlüğü oluşturulurken lambda fonksiyonları `k` değerini o an değil, çağrıldıkları an arar. `k` döngü bittiğinde `2` değerini alır.\n    *   Dolayısıyla tüm lambda fonksiyonları `v * 2` işlemini yapar. `[20, 20, 20]` döner.\n\n4.  **Sözlük Birleştirme (Dictionary Unpacking):**\n    *   `{\"a\": 1, \"b\": 2}` ve `{\"b\": 3}` birleşirken son gelen değerler (`b: 3`) eskisinin üzerine yazar. `\"a\": 0` en son eklendiği için en güncel değerdir.\n\n```text\n12 topla\n['tanim:ic:topla', 'tanim:dis:sarmal', 'cagri:dis', 'cagri:ic', 'topla']\n1 2 1 3\n[20, 20, 20]\n{'a': 0, 'b': 3}\n```",
+ "events": [],
+ "messages": [
+  {
+   "role": "system",
+   "content": "You are Gambit, a helpful assistant running in the user's terminal, powered by a local model. Your current mode is 'queen'. If asked who or what you are, introduce yourself by that name; do not name the underlying model or its maker.\nCurrent directory: C:\\AI\\benchmark\\v2\\results-uzak-queen\\sandboxes\\gemma-4-26b_q4_0-it__off\\okuma-dekorator\nOS: Windows 11 | Date: 2026-11-04\nAlways reply in the language the user writes in (usually Turkish). Be concise and practical."
+  },
+  {
+   "role": "user",
+   "content": "Aşağıdaki Python 3.14 kodu çalıştırılınca ekrana tam olarak ne yazdırılır? Kodu kafanda adım adım çalıştır. Cevabının sonunda çıktıyı birebir (her satır ayrı) tek bir ```text bloğu içinde ver.\n\n```python\nimport functools\n\nkayit = []\n\n\ndef izle(etiket):\n    def dekorator(f):\n        kayit.append(f\"tanim:{etiket}:{f.__name__}\")\n\n        @functools.wraps(f)\n        def sarmal(*a, **k):\n            kayit.append(f\"cagri:{etiket}\")\n            return f(*a, **k) + 1\n        return sarmal\n    return dekorator\n\n\n@izle(\"dis\")\n@izle(\"ic\")\ndef topla(x, y=10):\n    return x + y\n\n\nprint(topla(1), topla.__name__)\nprint(kayit)\n\n\ndef ekle(x, liste=[]):\n    liste.append(x)\n    return len(liste)\n\n\nprint(ekle(1), ekle(2), ekle(3, []), ekle(4))\ncarpanlar = {k: (lambda v: v * k) for k in range(3)}\nprint([f(10) for f in carpanlar.values()])\nprint({**{\"a\": 1, \"b\": 2}, **{\"b\": 3}, \"a\": 0})\n```"
+  },
+  {
+   "role": "assistant",
+   "content": "Kodun adım adım analizi şu şekildedir:\n\n1.  **Dekoratörler (`topla` fonksiyonu):**\n    *   `@izle(\"dis\")` en dıştaki dekoratördür.\n    *   `@izle(\"ic\")` ise `topla` fonksiyonuna daha yakın olan ikinci dekoratördür.\n    *   Tanımlama anında (import/definition sırasında):\n        *   `@izle(\"ic\")` çalışır: `kayit` listesine `\"tanim:ic:topla\"` eklenir.\n        *   `@izle(\"dis\")` çalışır: `kayit` listesine `\"tanim:dis:sarmal\"` eklenir (Çünkü `@functools.wraps` kullanılsa bile, `sarmal` fonksiyonu bir üst katmandaki fonksiyonun ismini `topla` olarak ayarlar ama `izle(\"dis\")` fonksiyonunun sarmaladığı şey zaten `izle(\"ic\")` tarafından dönen `sarmal` fonksiyonudur). Ancak Python'da dekoratörler yukarıdan aşağı çalışır:\n            *   `topla` fonksiyonu önce `izle(\"ic\")` ile sarmalanır. `kayit` -> `['tanim:ic:topla']`.\n            *   Ardından bu yeni fonksiyon `izle(\"dis\")` ile sarmalanır. `kayit` -> `['tanim:ic:topla', 'tanim:dis:sarmal']`.\n    *   `topla(1)` çağrısı:\n        *   `dis` sarmalı çalışır: `kayit` -> `[..., 'cagri:dis']`.\n        *   `ic` sarmalı çalışır: `kayit` -> `[..., 'cagri:ic']`.\n        *   `topla(1, 10)` asıl fonksiyonu `1 + 10 + 1` (her sarmal +1 ekler) sonucunu `12` olarak döndürür.\n    *   `topla.__name__` değeri `\"topla\"`dır (wraps sayesinde).\n\n2.  **Varsayılan Değer (Mutable Default Argument):**\n    *   `ekle(x, liste=[])` fonksiyonundaki `liste` nesnesi bellekte bir kez oluşturulur.\n    *   `ekle(1)` -> `liste` artık `[1]`, döner `1`.\n    *   `ekle(2)` -> `liste` artık `[1, 2]`, döner `2`.\n    *   `ekle(3, [])` -> Yeni bir liste (`[]`) gönderildiği için asıl `liste` etkilenmez, yeni liste `[3]` olur, döner `1`.\n    *   `ekle(4)` -> Asıl `liste` artık `[1, 2, 4]`, döner `3`.\n\n3.  **Lambda ve Kapsam (Late Binding):**\n    *   `carpanlar` sözlüğü oluşturulurken lambda fonksiyonları `k` değerini o an değil, çağrıldıkları an arar. `k` döngü bittiğinde `2` değerini alır.\n    *   Dolayısıyla tüm lambda fonksiyonları `v * 2` işlemini yapar. `[20, 20, 20]` döner.\n\n4.  **Sözlük Birleştirme (Dictionary Unpacking):**\n    *   `{\"a\": 1, \"b\": 2}` ve `{\"b\": 3}` birleşirken son gelen değerler (`b: 3`) eskisinin üzerine yazar. `\"a\": 0` en son eklendiği için en güncel değerdir.\n\n```text\n12 topla\n['tanim:ic:topla', 'tanim:dis:sarmal', 'cagri:dis', 'cagri:ic', 'topla']\n1 2 1 3\n[20, 20, 20]\n{'a': 0, 'b': 3}\n```"
+  }
+ ]
+}

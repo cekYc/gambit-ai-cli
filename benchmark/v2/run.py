@@ -47,6 +47,17 @@ RESULTS = HERE / "results"
 DEFAULT_PLAN = "bishop:off,rook:off,queen:off,bishop:auto,queen:auto,king:off"
 MAX_TOKENS = {"off": 8192, "auto": 12288}  # tek model çağrısı başına üst sınır (kaçak üretime karşı)
 SEED = 42
+# Örnekleme ayarları her istekte açıkça gönderilir; yoksa her sunucu kendi varsayılanını kullanır (LM Studio ile
+# llama-server'ınki farklı) ve aynı model iki ortamda farklı davranır. Değerler model dosyasının (GGUF)
+# general.sampling.* üst verisinden; dosyada olmayanlar için: Qwen3.5 aynı ailenin değerleri, Phi-4-mini-reasoning
+# tahmini. min_p 0 ve tekrar cezası yok (1.0) hepsinde.
+QWEN_SAMPLING = {"temperature": 1.0, "top_p": 0.95, "top_k": 20}
+SAMPLING = {
+    "google/gemma-4-26b-a4b-it-qat-q4_0-gguf/gemma-4-26b_q4_0-it.gguf": {"temperature": 1.0, "top_p": 0.95, "top_k": 64},
+    "qwen3.8-27b": QWEN_SAMPLING, "qwen3.6-35b-a3b": QWEN_SAMPLING, "qwen3.5-9b": QWEN_SAMPLING,
+    "qwen3.5-2b": QWEN_SAMPLING, "phi-4-mini-reasoning": {"temperature": 0.8, "top_p": 0.95, "top_k": 50},
+}
+SERVER_SAMPLING = False  # --server-sampling: eski koşulardaki gibi sunucunun varsayılanları
 MAX_STEPS = 14  # görev başına en fazla model adımı (gambit'te max_steps)
 BUDGET = {True: 480, False: 300}  # görev başına süre sınırı (sn): araçlı / araçsız; tüm modellere aynı
 # --no-time-limit: yavaş modellerin hızdan değil yetenekten ölçülmesi için süre sınırı yok. Döngüyü adım sınırı,
@@ -144,10 +155,14 @@ class _Completions:
         self.inner, self.extra, self.bench = inner, extra, None
 
     def create(self, **kwargs):
+        body = dict(self.extra.get("extra_body", {}))
         if REMOTE and kwargs.get("reasoning_effort") == "none":  # llama-server düşünmeyi şablon değişkeniyle kapatır
             kwargs.pop("reasoning_effort")
-            kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
-        return _Guard(self.inner.create(**{**self.extra, **kwargs}), self.bench)
+            body["chat_template_kwargs"] = {"enable_thinking": False}
+        merged = {**self.extra, **kwargs}
+        if body:
+            merged["extra_body"] = body
+        return _Guard(self.inner.create(**merged), self.bench)
 
 
 class GambitBench(ai.Chat):
@@ -317,7 +332,12 @@ def attempt(client, cfg: dict, preset: str, model_id: str, ctx: int | None, mode
     task.setup(sandbox)
     # Hep düşünen modeller (thinking: "always") kapalı modda da düşünür: otomatik moddaki çıktı payını alır
     always = cfg["presets"].get(preset, {}).get("thinking") == "always"
-    completions = _Completions(client.chat.completions, {"max_tokens": MAX_TOKENS["auto" if always else mode], "seed": SEED})
+    extra = {"max_tokens": MAX_TOKENS["auto" if always else mode], "seed": SEED}
+    if not SERVER_SAMPLING:
+        sp = SAMPLING.get(model_id, QWEN_SAMPLING)
+        extra.update(temperature=sp["temperature"], top_p=sp["top_p"],
+                     extra_body={"top_k": sp["top_k"], "min_p": 0.0, "repeat_penalty": 1.0})
+    completions = _Completions(client.chat.completions, extra)
     capped = types.SimpleNamespace(chat=types.SimpleNamespace(completions=completions))
     args = argparse.Namespace(no_tools=not task.tools, think=False if mode == "off" else None, show_think=False,
                               yes=False, auto_think=mode == "auto")
@@ -362,6 +382,7 @@ def attempt(client, cfg: dict, preset: str, model_id: str, ctx: int | None, mode
         "tool_calls": len(chat.events), "timed_out": chat.timed_out, "server_error": chat.server_error,
         "crash": crash, "time": datetime.now().isoformat(timespec="seconds"),
         "time_limit": NO_LIMIT_CAP if NO_LIMIT else BUDGET[task.tools], "seed": SEED,
+        "sampling": "sunucu" if SERVER_SAMPLING else "sabit",
         **({"host": "uzak"} if REMOTE else {}),
     }
     folder = RESULTS / "responses" / run_dir(model_id, mode)
@@ -373,9 +394,22 @@ def attempt(client, cfg: dict, preset: str, model_id: str, ctx: int | None, mode
     return result
 
 
+def remote_wait(cfg: dict, model_id: str, minutes: int = 20) -> bool:
+    """Uzak sunucu (ya da SSH tüneli) geri gelene kadar bekler; yerelde LM Studio'ya hiç dokunmaz."""
+    for _ in range(minutes * 6):
+        if model_ready(cfg, model_id):
+            return True
+        time.sleep(10)
+    return False
+
+
 def run_task(client, cfg: dict, preset: str, model_id: str, ctx, mode: str, task: core.Task) -> dict:
     for n in range(3):
-        if not model_ready(cfg, model_id):
+        if REMOTE and not model_ready(cfg, model_id):
+            log(f"    uzak sunucuya ulaşılamıyor; geri gelmesi bekleniyor…")
+            if not remote_wait(cfg, model_id):
+                raise RuntimeError("uzak sunucu 20 dakikadır yanıt vermiyor")
+        elif not model_ready(cfg, model_id):
             log(f"    model yüklü değil; yeniden yükleniyor…")
             model_id, ctx = load_preset(cfg, preset)
         res = attempt(client, cfg, preset, model_id, ctx, mode, task)
@@ -384,7 +418,8 @@ def run_task(client, cfg: dict, preset: str, model_id: str, ctx, mode: str, task
         if not broken or n == 2:
             return res
         log(f"    sunucu/model sorunu ({res['server_error'][:100]}); görev yeniden denenecek")
-        ensure_server(cfg)
+        if not REMOTE:
+            ensure_server(cfg)
         time.sleep(10)
     return res
 
@@ -578,7 +613,7 @@ def regrade() -> int:
 
 
 def main() -> int:
-    global RESULTS, NO_LIMIT, REMOTE, SEED
+    global RESULTS, NO_LIMIT, REMOTE, SEED, SERVER_SAMPLING
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--plan", default=DEFAULT_PLAN, help="hazır_ayar:mod listesi (mod: off | auto)")
     ap.add_argument("--only", default="", help="yalnızca id'si bu öneklerle başlayan görevler (virgülle)")
@@ -590,10 +625,13 @@ def main() -> int:
                     help=f"görev süre sınırını kaldır (güvenlik tavanı {NO_LIMIT_CAP // 3600} saat)")
     ap.add_argument("--remote", default="", help="uzak OpenAI uyumlu sunucu adresi (…/v1); anahtar GAMBIT_REMOTE_KEY'de")
     ap.add_argument("--seed", type=int, default=SEED, help="örnekleme tohumu; tekrar turlarında farklı ver")
+    ap.add_argument("--server-sampling", action="store_true",
+                    help="örnekleme ayarlarını gönderme, sunucunun varsayılanlarını kullan (eski koşular böyleydi)")
     args = ap.parse_args()
     RESULTS = Path(args.out).resolve()
     NO_LIMIT = args.no_time_limit
     REMOTE, SEED = args.remote.rstrip("/"), args.seed
+    SERVER_SAMPLING = args.server_sampling
     RESULTS.mkdir(parents=True, exist_ok=True)
     prefixes = tuple(p for p in args.only.split(",") if p)
     tasks = [t for t in TASKS if not prefixes or t.id.startswith(prefixes)]
@@ -613,7 +651,8 @@ def main() -> int:
         plan.append((preset, mode))
     log(f"Gambit Bench v2 · {len(tasks)} görev · plan: {', '.join(f'{p}/{m}' for p, m in plan)} · "
         f"{datetime.now():%Y-%m-%d %H:%M}" + (" · süre sınırı yok" if NO_LIMIT else "")
-        + (f" · uzak: {REMOTE}" if REMOTE else "") + (f" · seed {SEED}" if SEED != 42 else ""))
+        + (f" · uzak: {REMOTE}" if REMOTE else "") + (f" · seed {SEED}" if SEED != 42 else "")
+        + (" · sunucunun örnekleme ayarları" if SERVER_SAMPLING else ""))
     return run_plan(plan, tasks)
 
 
