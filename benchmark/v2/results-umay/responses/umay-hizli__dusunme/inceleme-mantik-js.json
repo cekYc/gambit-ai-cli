@@ -1,0 +1,90 @@
+{
+ "result": {
+  "preset": "umay-hizli",
+  "model_id": "umay-hizli",
+  "mode": "dusunme",
+  "task": "inceleme-mantik-js",
+  "category": "Kod inceleme",
+  "level": 3,
+  "weight": 3.0,
+  "score": 1.0,
+  "detail": "tam",
+  "notes": "",
+  "items": [
+   [
+    "satır 5: sinir_hatasi",
+    1,
+    1.0,
+    ""
+   ],
+   [
+    "satır 10: yanlis_kosul",
+    1,
+    1.0,
+    ""
+   ],
+   [
+    "satır 14: yan_etki",
+    1,
+    1.0,
+    ""
+   ],
+   [
+    "satır 19: async_hata",
+    1,
+    1.0,
+    ""
+   ],
+   [
+    "satır 25: yanlis_varsayilan",
+    1,
+    1.0,
+    ""
+   ],
+   [
+    "satır 32: kapsam_hatasi",
+    1,
+    1.0,
+    ""
+   ],
+   [
+    "satır 39: null_kontrolu",
+    1,
+    1.0,
+    ""
+   ]
+  ],
+  "wall": 22.0,
+  "tokens": 0,
+  "prompt_tokens": 0,
+  "calls": 1,
+  "think_calls": 1,
+  "tool_calls": 0,
+  "timed_out": false,
+  "server_error": "",
+  "crash": "",
+  "time": "2026-11-08T11:52:56",
+  "time_limit": 300,
+  "seed": null,
+  "sampling": "sunucu",
+  "host": "umay-api",
+  "agent": "umay-cli"
+ },
+ "final": "```json\n[\n  {\"satir\": 5, \"tur\": \"sinir_hatasi\"},\n  {\"satir\": 10, \"tur\": \"yanlis_kosul\"},\n  {\"satir\": 14, \"tur\": \"yan_etki\"},\n  {\"satir\": 20, \"tur\": \"async_hata\"},\n  {\"satir\": 25, \"tur\": \"yanlis_varsayilan\"},\n  {\"satir\": 32, \"tur\": \"kapsam_hatasi\"},\n  {\"satir\": 39, \"tur\": \"null_kontrolu\"}\n]\n```",
+ "events": [],
+ "messages": [
+  {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "reasoning",
+     "text": "The user wants me to review a JavaScript module and report real errors (wrong result, crash, infinite loop, unexpected side effect) with line numbers. I need to output ONLY a single JSON block at the end containing only actual problems, no false alarms.\n\nAllowed types: `sinir_hatasi`, `yanlis_kosul`, `yan_etki`, `async_hata`, `yanlis_varsayilan`, `kapsam_hatasi`, `null_kontrolu`, `tip_hatasi`.\n\nLet's analyze each line:\n\nLine 5: `for (let i = dizi.length - n; i <= dizi.length; i++) sonuc.push(dizi[i]);`\n- If n > dizi.length, start index is negative, accessing dizi[negative] returns undefined, pushing undefined.\n- If n is 0, start index = length, i <= length means i=length, dizi[length] is undefined, pushes undefined. Should be `< dizi.length` or start at `Math.max(0, dizi.length - n)` and `< dizi.length`.\n- Also if n is negative, weird.\n- This is a real error (wrong result / boundary error). Type: `sinir_hatasi` or `yanlis_kosul`. Since it's loop boundary, `sinir_hatasi` fits well (sınır hatası / off-by-one). Actually `sinir_hatasi` means boundary error. Yes.\n\nLine 10: `return urunler.map((u) => u.ad).indexOf(ad) > 0;`\n- indexOf returns 0 if found at first element. `> 0` means it returns false if the product is the first one. Should be `>= 0` or `!== -1` or `includes`.\n- This is `yanlis_kosul` (wrong condition).\n\nLine 14: `return urunler.sort((a, b) => b.fiyat - a.fiyat).slice(0, k);`\n- `sort` mutates the original array `urunler`. This is a side effect (yan_etki). The caller might not expect the input array to be reordered.\n- Type: `yan_etki`.\n\nLine 19-21: `idler.forEach(async (id) => { fiyatlar[id] = await getir(id); }); return fiyatlar;`\n- `forEach` does not wait for async callbacks. The function returns `fiyatlar` before promises resolve. This is `async_hata`.\n- Line 20 or 19? The async error is on line 20 (`await getir(id)` inside forEach not awaited) or line 19 (forEach async). Usually the error is the pattern on line 19-20. The user wants \"en belirgin olduğu tek satırla\". Line 20 contains the await that doesn't actually await the overall completion. Or line 19 where forEach is used with async. I'll pick line 20 because that's where the await is misleading. Actually the root cause is line 19 using forEach with async. But line 20 is where `await` happens but doesn't block the outer function. Let's say line 20: `async_hata`. Or line 19. I'll choose line 20 as it's the await inside non-awaited loop. Hmm. Let's think: `forEach(async (id) => { ... })` on line 19 is the structural issue. Line 20 `fiyatlar[id] = await getir(id);` is where the async operation occurs but result isn't awaited by caller. I'll mark line 20 as `async_hata` because that's where the unhandled promise/async operation is most visible. Actually many linters flag line 19. But line 20 has `await`. I'll use line 20.\n\nLine 25-28: `function sayfala(liste, boyut = 0) { ... for (let i = 0; i < liste.length; i += boyut) ... }`\n- If `boyut` is 0, `i += 0` causes infinite loop (since i never increases). Default parameter is 0, so calling `sayfala(liste)` without boyut causes infinite loop.\n- This is a real error: infinite loop. Type: `sinir_hatasi`? Or `yanlis_varsayilan` (wrong default)? The default value 0 causes infinite loop. `yanlis_varsayilan` fits (wrong default). Or `sinir_hatasi`. Since it's an infinite loop due to step 0, `yanlis_varsayilan` seems appropriate because the default parameter is wrong. But the actual crash/hang is at line 27 `i += boyut` when boyut is 0. However line 25 defines default 0. The user wants the most prominent line. I'd say line 25: `yanlis_varsayilan` (default 0 leads to infinite loop). Or line 27: infinite loop. Let's pick line 25 as the root cause (default value). Type `yanlis_varsayilan`.\n\nLine 32-33: `for (var i = 0; i < isler.length; i++) { setTimeout(() => isler[i].calistir(), 10); }`\n- `var` is function-scoped, by the time setTimeout executes, loop has finished, `i` is `isler.length`, so `isler[i]` is undefined, calling `.calistir()` on undefined throws TypeError.\n- This is `kapsam_hatasi` (scope issue with var/closure) or `tip_hatasi` (undefined is not object). It's a classic closure/scope bug. Type: `kapsam_hatasi`. Line 32 (var i) or line 33 (isler[i]). The root cause is `var` on line 32. I'll mark line 32 as `kapsam_hatasi`. Or line 33 where the crash happens. Most prominent line where error manifests: line 33 `isler[i].calistir()` when i is out of bounds. But the cause is line 32. I'll use line 32: `kapsam_hatasi`.\n\nLine 39: `return kullanici.adres.sehir.toUpperCase();`\n- `kullanici.adres` may be undefined (comment says optional). Accessing `.sehir` on undefined throws TypeError.\n- This is `null_kontrolu` (missing null check). Line 39.\n\nLine 43: `return sepet.reduce((t, k) => t + k.fiyat * k.adet, 0);`\n- If `sepet` is empty, reduce with initial value 0 is fine.\n- If `k.fiyat` or `k.adet` is undefined, result is NaN. But not necessarily a crash.\n- If `sepet` is null/undefined, reduce throws. But parameter is expected to be array.\n- Is there a real error? Not obviously. `reduce` on empty array with initial value is safe. No initial value would be error, but there is initial value 0. So probably no error here.\n\nLine 3: `function sonNEleman(dizi, n) {` - if n is not provided, it's undefined, `dizi.length - undefined` is NaN, loop doesn't run or weird. But n is required parameter. No default. Not necessarily an error if caller always passes n. But could be `yanlis_varsayilan` if n omitted? Not specified. Skip.\n\nLine 13: `function enPahalilar(urunler, k = 3)` - if k > urunler.length, slice handles it fine. If k is negative, slice(0, negative) behaves oddly but not crash. Not a clear error.\n\nLine 42: `toplamTutar` - if sepet is not array, crash. But expected array.\n\nSo real errors:\n- Line 5: `sinir_hatasi` (off-by-one, includes dizi.length which is undefined, and negative start if n > length).\n- Line 10: `yanlis_kosul` (> 0 should be >= 0).\n- Line 14: `yan_etki` (sort mutates input array).\n- Line 20: `async_hata` (forEach with async, returns before resolution). Or line 19. I'll pick 20.\n- Line 25: `yanlis_varsayilan` (boyut = 0 causes infinite loop). Or line 27. I'll pick 25 because default is the root cause. Actually the infinite loop happens at line 27 when boyut is 0. But line 25 is where default 0 is set. The user wants \"en belirgin olduğu tek satır\". The infinite loop is most evident at `i += boyut` on line 27 when boyut=0. However the default value on line 25 is the design flaw. I'll choose line 25 with `yanlis_varsayilan`.\n- Line 32: `kapsam_hatasi` (var closure in setTimeout).\n- Line 39: `null_kontrolu` (kullanici.adres can be undefined).\n\nLet's double check types:\n- `sinir_hatasi`: boundary error. Line 5 fits (loop boundary).\n- `yanlis_kosul`: wrong condition. Line 10 fits.\n- `yan_etki`: side effect. Line 14 fits (mutates original array).\n- `async_hata`: async error. Line 20 fits.\n- `yanlis_varsayilan`: wrong default. Line 25 fits (default 0).\n- `kapsam_hatasi`: scope error. Line 32 fits (var in loop with setTimeout).\n- `null_kontrolu`: null check missing. Line 39 fits.\n\nAre there any others?\nLine 3: If `n` is undefined, `dizi.length - n` is NaN, loop `for (let i = NaN; ...)` doesn't execute, returns []. Not necessarily a crash but wrong result. However no default for n. Could be `yanlis_varsayilan`? But it's a required parameter. I'll skip to avoid false alarm.\n\nLine 27: `i += boyut` infinite loop if boyut 0. But I already captured via line 25 default. If I mark line 25, that's fine. Could also mark line 27 as `sinir_hatasi` or `dongu_hatasi` but that type isn't allowed. `yanlis_varsayilan` on line 25 is best.\n\nLine 33: `isler[i].calistir()` - if i is length, undefined.calistir() -> TypeError. Type could be `tip_hatasi`. But root cause is scope. `kapsam_hatasi` is more accurate. I'll use line 32.\n\nLine 43: `k.fiyat * k.adet` if missing -> NaN. Not a crash, just wrong result. Could be `tip_hatasi`? But it's not guaranteed. Skip.\n\nLine 1: comment. Skip.\n\nLine 4: `const sonuc = [];` fine.\n\nLine 6: return. fine.\n\nLine 9: function. fine.\n\nLine 11: end function. fine.\n\nLine 13: function. fine.\n\nLine 15: end. fine.\n\nLine 17: async function. fine.\n\nLine 18: const fiyatlar = {}. fine.\n\nLine 19: forEach. Could mark line 19 as async_hata instead of 20. But line 20 has await. I'll keep line 20.\n\nLine 21: end forEach. fine.\n\nLine 22: return fiyatlar. fine.\n\nLine 23: end. fine.\n\nLine 24: blank.\n\nLine 26: const sayfalar = []. fine.\n\nLine 28: return. fine.\n\nLine 29: end. fine.\n\nLine 30: blank.\n\nLine 31: function. fine.\n\nLine 34: end for. fine.\n\nLine 35: end. fine.\n\nLine 36: blank.\n\nLine 37: function. fine.\n\nLine 38: comment. fine.\n\nLine 40: end. fine.\n\nLine 41: blank.\n\nLine 42: function. fine.\n\nLine 44: end. fine.\n\nLine 45: blank.\n\nLine 46: exports. fine.\n\nSo final JSON:\n\n[\n  {\"satir\": 5, \"tur\": \"sinir_hatasi\"},\n  {\"satir\": 10, \"tur\": \"yanlis_kosul\"},\n  {\"satir\": 14, \"tur\": \"yan_etki\"},\n  {\"satir\": 20, \"tur\": \"async_hata\"},\n  {\"satir\": 25, \"tur\": \"yanlis_varsayilan\"},\n  {\"satir\": 32, \"tur\": \"kapsam_hatasi\"},\n  {\"satir\": 39, \"tur\": \"null_kontrolu\"}\n]\n\nNeed to ensure output is ONLY the JSON block at the end. The user said: \"Cevabının sonunda YALNIZCA gerçek sorunları içeren tek bir ```json bloğu ver\". So I should provide the JSON block. Maybe no extra text, or minimal text? They said \"Cevabının sonunda\" (at the end of your answer). To be safe, I'll just output the JSON block and nothing else, or perhaps a very brief sentence then JSON. But \"YALNIZCA ... tek bir json bloğu\" suggests only the JSON block. I'll output just the JSON block in a markdown code block.\n\nWait, they said \"Cevabının sonunda YALNIZCA gerçek sorunları içeren tek bir ```json bloğu ver\". It could mean the answer should end with that block, but maybe some explanation is okay before. However \"Sorun olmayan satırları bildirme; yanlış alarmlar puan kırar.\" implies strictness. I'll output only the JSON code block to be safe.\n\nLet's verify line numbers match exactly the provided code:\n\n```\n  1| // Sipariş yardımcıları (Node.js)\n  2| \n  3| function sonNEleman(dizi, n) {\n  4|   const sonuc = [];\n  5|   for (let i = dizi.length - n; i <= dizi.length; i++) sonuc.push(dizi[i]);\n  6|   return sonuc;\n  7| }\n  8| \n  9| function stoktaVarMi(urunler, ad) {\n 10|   return urunler.map((u) => u.ad).indexOf(ad) > 0;\n 11| }\n 12| \n 13| function enPahalilar(urunler, k = 3) {\n 14|   return urunler.sort((a, b) => b.fiyat - a.fiyat).slice(0, k);\n 15| }\n 16| \n 17| async function fiyatlariGetir(idler, getir) {\n 18|   const fiyatlar = {};\n 19|   idler.forEach(async (id) => {\n 20|     fiyatlar[id] = await getir(id);\n 21|   });\n 22|   return fiyatlar;\n 23| }\n 24| \n 25| function sayfala(liste, boyut = 0) {\n 26|   const sayfalar = [];\n 27|   for (let i = 0; i < liste.length; i += boyut) sayfalar.push(liste.slice(i, i + boyut));\n 28|   return sayfalar;\n 29| }\n 30| \n 31| function zamanlayicilar(isler) {\n 32|   for (var i = 0; i < isler.length; i++) {\n 33|     setTimeout(() => isler[i].calistir(), 10);\n 34|   }\n 35| }\n 36| \n 37| function sehir(kullanici) {\n 38|   // kullanici.adres isteğe bağlıdır (bazı kullanıcılarda hiç yoktur)\n 39|   return kullanici.adres.sehir.toUpperCase();\n 40| }\n 41| \n 42| function toplamTutar(sepet) {\n 43|   return sepet.reduce((t, k) => t + k.fiyat * k.adet, 0);\n 44| }\n 45| \n 46| module.exports = { sonNEleman, stoktaVarMi, enPahalilar, fiyatlariGetir, sayfala, zamanlayicilar, sehir, toplamTutar };\n```\n\nYes line numbers match.\n\nOne nuance: line 5, if n is greater than length, start index negative. `dizi.length - n` negative. `dizi[negative]` is undefined. It pushes undefined. Also `<= dizi.length` includes index equal to length, which is undefined. So off-by-one and boundary. `sinir_hatasi` is correct.\n\nLine 25: default boyut = 0. Infinite loop. `yanlis_varsayilan` is correct.\n\nLine 32: `var i` in loop with setTimeout. Classic scope. `kapsam_hatasi`.\n\nLine 39: no null check on `kullanici.adres`. `null_kontrolu`.\n\nAll good.\n\nI will output exactly:\n\n```json\n[\n  {\"satir\": 5, \"tur\": \"sinir_hatasi\"},\n  {\"satir\": 10, \"tur\": \"yanlis_kosul\"},\n  {\"satir\": 14, \"tur\": \"yan_etki\"},\n  {\"satir\": 20, \"tur\": \"async_hata\"},\n  {\"satir\": 25, \"tur\": \"yanlis_varsayilan\"},\n  {\"satir\": 32, \"tur\": \"kapsam_hatasi\"},\n  {\"satir\": 39, \"tur\": \"null_kontrolu\"}\n]\n```\n\nNo extra text."
+    },
+    {
+     "type": "text",
+     "text": "```json\n[\n  {\"satir\": 5, \"tur\": \"sinir_hatasi\"},\n  {\"satir\": 10, \"tur\": \"yanlis_kosul\"},\n  {\"satir\": 14, \"tur\": \"yan_etki\"},\n  {\"satir\": 20, \"tur\": \"async_hata\"},\n  {\"satir\": 25, \"tur\": \"yanlis_varsayilan\"},\n  {\"satir\": 32, \"tur\": \"kapsam_hatasi\"},\n  {\"satir\": 39, \"tur\": \"null_kontrolu\"}\n]\n```"
+    }
+   ]
+  }
+ ]
+}

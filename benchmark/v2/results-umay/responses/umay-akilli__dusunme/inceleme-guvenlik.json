@@ -1,0 +1,90 @@
+{
+ "result": {
+  "preset": "umay-akilli",
+  "model_id": "umay-akilli",
+  "mode": "dusunme",
+  "task": "inceleme-guvenlik",
+  "category": "Kod inceleme",
+  "level": 3,
+  "weight": 3.0,
+  "score": 0.7971,
+  "detail": "1 yanlış alarm ×0.93 | eksik: satır 60: yetki_eksik",
+  "notes": "",
+  "items": [
+   [
+    "satır 10: gizli_anahtar",
+    1,
+    1.0,
+    ""
+   ],
+   [
+    "satır 22: sql_enjeksiyonu",
+    1,
+    1.0,
+    ""
+   ],
+   [
+    "satır 29: yol_gecisi",
+    1,
+    1.0,
+    ""
+   ],
+   [
+    "satır 36: kod_calistirma",
+    1,
+    1.0,
+    ""
+   ],
+   [
+    "satır 42: zayif_hash",
+    1,
+    1.0,
+    ""
+   ],
+   [
+    "satır 49: zayif_rastgele",
+    1,
+    1.0,
+    ""
+   ],
+   [
+    "satır 60: yetki_eksik",
+    1,
+    0.0,
+    ""
+   ]
+  ],
+  "wall": 31.2,
+  "tokens": 0,
+  "prompt_tokens": 0,
+  "calls": 1,
+  "think_calls": 1,
+  "tool_calls": 0,
+  "timed_out": false,
+  "server_error": "",
+  "crash": "",
+  "time": "2026-11-08T10:17:36",
+  "time_limit": 300,
+  "seed": null,
+  "sampling": "sunucu",
+  "host": "umay-api",
+  "agent": "umay-cli"
+ },
+ "final": "```json\n[\n  {\"satir\": 10, \"tur\": \"gizli_anahtar\"},\n  {\"satir\": 22, \"tur\": \"sql_enjeksiyonu\"},\n  {\"satir\": 29, \"tur\": \"yol_gecisi\"},\n  {\"satir\": 36, \"tur\": \"kod_calistirma\"},\n  {\"satir\": 42, \"tur\": \"zayif_hash\"},\n  {\"satir\": 49, \"tur\": \"zayif_rastgele\"},\n  {\"satir\": 62, \"tur\": \"yetki_eksik\"}\n]\n```",
+ "events": [],
+ "messages": [
+  {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "reasoning",
+     "text": "The user wants a security audit of the provided Flask application code.\nI need to identify specific vulnerability types from the allowed list: `sql_enjeksiyonu`, `yol_gecisi`, `gizli_anahtar`, `kod_calistirma`, `zayif_hash`, `zayif_rastgele`, `yetki_eksik`, `xss`, `csrf`.\nI must report the line number where the vulnerability is most evident.\nI must output ONLY a JSON block at the end with the findings.\nNo false positives.\n\nLet's analyze line by line.\n\nLine 10: `app.secret_key = \"gizli-anahtar-123\"` -> Hardcoded secret key. Type: `gizli_anahtar`.\n\nLine 12: `db = sqlite3.connect(\"app.db\", check_same_thread=False)` -> Global connection, check_same_thread=False is risky for threading but not strictly a vulnerability type in the list. However, the connection is global.\n\nLine 16: Parameterized query. Safe.\n\nLine 22: `db.execute(f\"SELECT ad FROM urunler WHERE ad LIKE '%{q}%'\")` -> Direct string interpolation into SQL query. `q` comes from request args. SQL Injection. Type: `sql_enjeksiyonu`. Line 22.\n\nLine 28-30: `ad = request.args[\"ad\"]` -> `open(os.path.join(UPLOAD_DIR, ad), \"rb\")`. Path traversal. User controls `ad`. No validation/sanitization. `os.path.join` resolves relative paths if `ad` contains `../`. Type: `yol_gecisi`. Line 29 (or 28). The join happens at 29.\n\nLine 35-36: `ifade = request.form[\"ifade\"]` -> `eval(ifade)`. Arbitrary code execution. Type: `kod_calistirma`. Line 36.\n\nLine 42: `hashlib.md5(sifre.encode()).hexdigest()` -> MD5 for password hashing. Weak hash. Type: `zayif_hash`. Line 42.\n\nLine 49: `token = str(random.randint(100000, 999999))` -> `random.randint` is not cryptographically secure. Used for password reset token. Type: `zayif_rastgele`. Line 49.\n\nLine 56: `session[\"csrf\"] = secrets.token_hex(16)` -> Generates CSRF token but never validates it anywhere. However, the vulnerability \"csrf\" usually implies missing protection. The code generates a token but doesn't enforce it on state-changing routes (like /kayit, /hesapla, /sifre-sifirla, /admin/...). But the prompt asks for vulnerabilities *in the code*. Missing CSRF protection is a vulnerability. However, is there a specific line? The generation is line 56. The lack of validation is systemic. Usually, `csrf` type is for missing CSRF protection on forms. Since there's no validation logic shown, it's a missing control. But the list includes `csrf`. I should check if there's a specific line causing it. The prompt says \"Her açığı en belirgin olduğu tek satırla bildir\". The generation of a token that is never used is misleading. But the vulnerability is the lack of protection on POST/DELETE endpoints. I'll skip `csrf` as a specific line vulnerability unless there's a clear flaw like using a static token. Here it's generated per session/login. The flaw is missing `@csrf.protect` or similar. It's architectural. I'll omit it to avoid false positive risk unless explicit.\n\nLine 60-63: `@app.delete(\"/admin/kullanici/<int:uid>\")` -> Deletes user by ID. No authorization check (is current user admin?). Type: `yetki_eksik`. Line 61 (execution) or 60 (route). The function `kullanici_sil` does not check permissions. Line 62 executes delete.\n\nLine 68: `if \"uid\" not in session:` -> Authentication check. Seems okay for that endpoint.\n\nLine 22: SQL Injection confirmed.\nLine 29: Path Traversal confirmed.\nLine 36: Code Execution confirmed.\nLine 42: Weak Hash (MD5) confirmed.\nLine 49: Weak Random (random.randint) confirmed.\nLine 10: Hardcoded Secret Key confirmed.\nLine 62: Missing Authorization (yetki_eksik) confirmed.\n\nLet's verify line numbers.\nCode snippet lines:\n1 import hashlib\n2 import os\n3 import random\n4 import secrets\n5 import sqlite3\n6\n7 from flask import Flask, abort, request, session\n8\n9 app = Flask(__name__)\n10 app.secret_key = \"gizli-anahtar-123\"  -> gizli_anahtar\n11 UPLOAD_DIR = \"/srv/uploads\"\n12 db = sqlite3.connect(\"app.db\", check_same_thread=False)\n13\n14\n15 def kullanici_bul(ad):\n16     return db.execute(\"SELECT * FROM kullanicilar WHERE ad = ?\", (ad,)).fetchone()\n17\n18\n19 @app.get(\"/ara\")\n20 def ara():\n21     q = request.args.get(\"q\", \"\")\n22     rows = db.execute(f\"SELECT ad FROM urunler WHERE ad LIKE '%{q}%'\").fetchall() -> sql_enjeksiyonu\n23     return {\"sonuc\": [r[0] for r in rows]}\n24\n25\n26 @app.get(\"/dosya\")\n27 def dosya():\n28     ad = request.args[\"ad\"]\n29     with open(os.path.join(UPLOAD_DIR, ad), \"rb\") as f: -> yol_gecisi\n30         return f.read()\n31\n32\n33 @app.post(\"/hesapla\")\n34 def hesapla():\n35     ifade = request.form[\"ifade\"]\n36     return {\"sonuc\": eval(ifade)} -> kod_calistirma\n37\n38\n39 @app.post(\"/kayit\")\n40 def kayit():\n41     sifre = request.form[\"sifre\"]\n42     ozet = hashlib.md5(sifre.encode()).hexdigest() -> zayif_hash\n43     db.execute(\"INSERT INTO kullanicilar (ad, sifre) VALUES (?, ?)\", (request.form[\"ad\"], ozet))\n44     return {\"ok\": True}\n45\n46\n47 @app.post(\"/sifre-sifirla\")\n48 def sifirla():\n49     token = str(random.randint(100000, 999999)) -> zayif_rastgele\n50     db.execute(\"UPDATE kullanicilar SET token = ? WHERE ad = ?\", (token, request.form[\"ad\"]))\n51     return {\"gonderildi\": True}\n52\n53\n54 @app.post(\"/oturum\")\n55 def oturum():\n56     session[\"csrf\"] = secrets.token_hex(16)\n57     return {\"ok\": True}\n58\n59\n60 @app.delete(\"/admin/kullanici/<int:uid>\")\n61 def kullanici_sil(uid):\n62     db.execute(\"DELETE FROM kullanicilar WHERE id = ?\", (uid,)) -> yetki_eksik (no authz check)\n63     return {\"silindi\": uid}\n64\n65\n66 @app.get(\"/profil\")\n67 def profil():\n68     if \"uid\" not in session:\n69         abort(401)\n70     return {\"uid\": session[\"uid\"]}\n\nAll looks correct. I will format the JSON block."
+    },
+    {
+     "type": "text",
+     "text": "```json\n[\n  {\"satir\": 10, \"tur\": \"gizli_anahtar\"},\n  {\"satir\": 22, \"tur\": \"sql_enjeksiyonu\"},\n  {\"satir\": 29, \"tur\": \"yol_gecisi\"},\n  {\"satir\": 36, \"tur\": \"kod_calistirma\"},\n  {\"satir\": 42, \"tur\": \"zayif_hash\"},\n  {\"satir\": 49, \"tur\": \"zayif_rastgele\"},\n  {\"satir\": 62, \"tur\": \"yetki_eksik\"}\n]\n```"
+    }
+   ]
+  }
+ ]
+}
