@@ -139,4 +139,6 @@ Gambit CLI dosya yazma (`write_file`), dosya düzenleme (`edit_file`) ve PowerSh
 
 ## Lisans
 
-Bu proje [MIT Lisansı](LICENSE) kapsamında lisanslanmıştır.
+Bu proje [PolyForm Noncommercial License 1.0.0](LICENSE) ile lisanslanmıştır: kişisel, eğitim, araştırma ve kâr amacı gütmeyen kullanım serbesttir; ticari kullanım için yazılı izin gerekir. 8 Kasım 2026'dan önceki sürümler MIT Lisansı ile yayımlanmıştı.
+
+`ai-cli/tools.py` araçları, [Umay CLI](https://github.com/cekYc/umay-cli) projesinde de kullanılmaktadır.
