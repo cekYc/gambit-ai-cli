@@ -1,5 +1,5 @@
 import time
-from functools import wraps
+import functools
 
 
 def onbellekle(ttl=None, saat=time.monotonic):
@@ -18,36 +18,37 @@ def onbellekle(ttl=None, saat=time.monotonic):
         onbellek = {}
         isabet = iska = 0
 
-        @wraps(f)
+        @functools.wraps(f)
         def sarmal(*args, **kwargs):
             nonlocal isabet, iska
+            
+            # Hashlenebilirlik kontrolü
             try:
-                # kwargs sırasını önemsiz yapmak için frozenset kullan
-                anahtar = (args, frozenset(kwargs.items()))
-                hash(anahtar)  # hashlenebilir mi kontrol et
+                # kwargs sırasından bağımsız anahtar oluştur
+                anahtar = (args, tuple(sorted(kwargs.items())))
+                hash(anahtar)
             except TypeError:
-                # Hashlenemeyen argüman: önbellek atla, doğrudan çalıştır
+                # Hashlenemeyen argüman -> önbelleğe almadan çalıştır
                 iska += 1
                 return f(*args, **kwargs)
 
+            # Önbellekte var mı ve geçerli mi?
             if anahtar in onbellek:
                 deger, zaman = onbellek[anahtar]
-                # ttl None ise süresiz; ttl varsa zaman farkı <= ttl ise geçerli (eşitlikte de geçerli)
                 if ttl is None or saat() - zaman <= ttl:
                     isabet += 1
                     return deger
-                # süre dolmuş, önbellekten sil ve yeniden hesapla
+                # TTL dolmuş -> silip yeniden hesapla
                 del onbellek[anahtar]
 
+            # Önbellekte yok veya geçersiz
             iska += 1
             deger = f(*args, **kwargs)
             onbellek[anahtar] = (deger, saat())
             return deger
 
         def temizle():
-            nonlocal isabet, iska
             onbellek.clear()
-            isabet = iska = 0
 
         def bilgi():
             return {"isabet": isabet, "iska": iska}

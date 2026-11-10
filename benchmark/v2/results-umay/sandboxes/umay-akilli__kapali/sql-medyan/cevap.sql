@@ -15,19 +15,25 @@ sehir_siparis AS (
         ROW_NUMBER() OVER (PARTITION BY sehir ORDER BY tutar) AS rn,
         COUNT(*) OVER (PARTITION BY sehir) AS cnt
     FROM siparis_tutar
-)
-SELECT 
-    sehir,
-    cnt AS siparis_sayisi,
-    ROUND(
+),
+medyan_hesapla AS (
+    SELECT 
+        sehir,
+        cnt AS siparis_sayisi,
         CASE 
             WHEN cnt % 2 = 1 THEN 
                 MAX(CASE WHEN rn = (cnt + 1) / 2 THEN tutar END)
             ELSE 
-                (MAX(CASE WHEN rn = cnt / 2 THEN tutar END) + MAX(CASE WHEN rn = cnt / 2 + 1 THEN tutar END)) / 2.0
-        END, 2
-    ) AS medyan
-FROM sehir_siparis
-WHERE cnt >= 2
-GROUP BY sehir, cnt
+                (MAX(CASE WHEN rn = cnt / 2 THEN tutar END) + 
+                 MAX(CASE WHEN rn = cnt / 2 + 1 THEN tutar END)) / 2.0
+        END AS medyan
+    FROM sehir_siparis
+    WHERE cnt >= 2
+    GROUP BY sehir, cnt
+)
+SELECT 
+    sehir,
+    siparis_sayisi,
+    ROUND(medyan, 2) AS medyan
+FROM medyan_hesapla
 ORDER BY medyan DESC, sehir ASC;

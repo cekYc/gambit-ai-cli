@@ -1,44 +1,47 @@
 class TokenBucket {
   constructor({ capacity, refillPerSecond, now = Date.now }) {
-    if (typeof capacity !== 'number' || !Number.isFinite(capacity) || capacity <= 0) {
+    if (!Number.isFinite(capacity) || capacity <= 0) {
       throw new RangeError('capacity must be a positive finite number');
     }
-    if (typeof refillPerSecond !== 'number' || !Number.isFinite(refillPerSecond) || refillPerSecond < 0) {
+    if (!Number.isFinite(refillPerSecond) || refillPerSecond < 0) {
       throw new RangeError('refillPerSecond must be a non-negative finite number');
     }
-    if (typeof now !== 'function') {
-      throw new RangeError('now must be a function');
-    }
 
-    this._capacity = capacity;
-    this._refillPerSecond = refillPerSecond;
-    this._now = now;
-    this._tokens = capacity;
-    this._lastRefillTime = now();
+    this.capacity = capacity;
+    this.refillPerSecond = refillPerSecond;
+    this.now = now;
+    this.tokens = capacity;
+    this.lastRefillTime = now();
+    this.maxSeenTime = this.lastRefillTime;
   }
 
   _refill() {
-    const now = this._now();
-    if (now < this._lastRefillTime) {
+    const currentTime = this.now();
+    
+    if (currentTime < this.maxSeenTime) {
       return;
     }
-    const elapsedSeconds = (now - this._lastRefillTime) / 1000;
-    const addedTokens = elapsedSeconds * this._refillPerSecond;
-    this._tokens = Math.min(this._capacity, this._tokens + addedTokens);
-    this._lastRefillTime = now;
-  }
-
-  _validateN(n) {
-    if (typeof n !== 'number' || !Number.isFinite(n) || n <= 0 || !Number.isInteger(n)) {
-      throw new RangeError('n must be a positive finite integer');
+    
+    const elapsedMs = currentTime - this.lastRefillTime;
+    if (elapsedMs > 0) {
+      const elapsedSeconds = elapsedMs / 1000;
+      const tokensToAdd = elapsedSeconds * this.refillPerSecond;
+      this.tokens = Math.min(this.capacity, this.tokens + tokensToAdd);
     }
+    
+    this.lastRefillTime = currentTime;
+    this.maxSeenTime = currentTime;
   }
 
   tryTake(n = 1) {
-    this._validateN(n);
+    if (!Number.isFinite(n) || n <= 0 || !Number.isInteger(n)) {
+      throw new RangeError('n must be a positive finite integer');
+    }
+    
     this._refill();
-    if (this._tokens >= n) {
-      this._tokens -= n;
+    
+    if (this.tokens >= n) {
+      this.tokens -= n;
       return true;
     }
     return false;
@@ -46,25 +49,30 @@ class TokenBucket {
 
   available() {
     this._refill();
-    return this._tokens;
+    return this.tokens;
   }
 
   msUntil(n = 1) {
-    this._validateN(n);
-    this._refill();
-
-    if (n > this._capacity) {
+    if (!Number.isFinite(n) || n <= 0 || !Number.isInteger(n)) {
+      throw new RangeError('n must be a positive finite integer');
+    }
+    
+    if (n > this.capacity) {
       return Infinity;
     }
-    if (this._tokens >= n) {
+    
+    this._refill();
+    
+    if (this.tokens >= n) {
       return 0;
     }
-    if (this._refillPerSecond === 0) {
+    
+    if (this.refillPerSecond === 0) {
       return Infinity;
     }
-
-    const neededTokens = n - this._tokens;
-    const secondsNeeded = neededTokens / this._refillPerSecond;
+    
+    const neededTokens = n - this.tokens;
+    const secondsNeeded = neededTokens / this.refillPerSecond;
     return Math.ceil(secondsNeeded * 1000);
   }
 }

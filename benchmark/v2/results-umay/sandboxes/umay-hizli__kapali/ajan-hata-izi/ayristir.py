@@ -12,6 +12,6 @@ def tutar(metin):
 
 
 def tarih(metin):
-    """GG.AA.YYYY" biçimindeki tarihi date nesnesine çevirir."""
+    """"GG.AA.YYYY" biçimindeki tarihi date nesnesine çevirir."""
     g, a, y = metin.strip().split(".")
     return date(int(y), int(a), int(g))

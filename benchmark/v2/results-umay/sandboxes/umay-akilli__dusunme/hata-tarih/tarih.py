@@ -9,7 +9,7 @@ def artik_yil(y):
 def ay_sonu(y, m):
     """y yılının m. ayının (1-12) son günü."""
     gunler = [31, 29 if artik_yil(y) else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    return gunler[m - 1]
+    return gunler[m-1]
 
 
 def ay_ekle(d, n):

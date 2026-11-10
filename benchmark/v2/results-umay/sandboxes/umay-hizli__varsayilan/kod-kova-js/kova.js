@@ -1,75 +1,83 @@
-'use strict';
-
-function _isPositiveFinite(value) {
-  return typeof value === 'number' && isFinite(value) && value > 0;
-}
-
-function _isNonNegativeFinite(value) {
-  return typeof value === 'number' && isFinite(value) && value >= 0;
+function _isPosFinite(v) {
+  return typeof v === 'number' && Number.isFinite(v) && v > 0;
 }
 
 class TokenBucket {
-  constructor({ capacity, refillPerSecond, now } = {}) {
-    if (!_isPositiveFinite(capacity)) {
-      throw new RangeError('capacity must be a positive finite number');
+  constructor({ capacity, refillPerSecond, now }) {
+    if (!_isPosFinite(capacity)) {
+      throw new RangeError('capacity pozitif sonlu sayı olmalıdır');
     }
-    if (!_isNonNegativeFinite(refillPerSecond)) {
-      throw new RangeError('refillPerSecond must be a non-negative finite number');
+    if (typeof refillPerSecond !== 'number' || !Number.isFinite(refillPerSecond) || refillPerSecond < 0) {
+      throw new RangeError('refillPerSecond pozitif veya sıfır bir sonlu sayı olmalıdır');
     }
 
     this.capacity = capacity;
     this.refillPerSecond = refillPerSecond;
-    this.nowFn = typeof now === 'function' ? now : Date.now;
-    this.tokens = capacity;
-    this.lastTime = this.nowFn();
+    this._now = typeof now === 'function' ? now : Date.now;
+
+    // Kova dolu başlar
+    this._tokens = capacity;
+    this._lastRefillTime = this._now();
   }
 
   _refill() {
-    const current = this.nowFn();
-    if (current >= this.lastTime) {
-      const elapsedMs = current - this.lastTime;
-      this.tokens = Math.min(
-        this.capacity,
-        this.tokens + (elapsedMs / 1000) * this.refillPerSecond
-      );
-      this.lastTime = current;
+    const now = this._now();
+    const last = this._lastRefillTime;
+
+    // Saat geri giderse jeton eklenmez/çıkarılmaz; kaydı eski en büyük zamana tutar.
+    if (now < last) {
+      return;
     }
-    // Saat geri giderse jeton eklenmez/çıkarılmaz ve o ana kadar görülen
-    // en büyük zaman referans (lastTime) korunur.
+
+    const deltaMs = now - last;
+    if (deltaMs <= 0 || this.refillPerSecond <= 0) {
+      return;
+    }
+
+    const added = (deltaMs / 1000) * this.refillPerSecond;
+    this._tokens = Math.min(this.capacity, this._tokens + added);
+    this._lastRefillTime = now;
   }
 
   available() {
     this._refill();
-    return this.tokens;
+    return this._tokens;
   }
 
   tryTake(n = 1) {
-    if (!_isPositiveFinite(n)) {
-      throw new RangeError('n must be a positive finite number');
+    if (!_isPosFinite(n)) {
+      throw new RangeError('n pozitif sonlu sayı olmalıdır');
     }
-    this._refill();
-    if (this.tokens >= n) {
-      this.tokens -= n;
+
+    const avail = this.available();
+    if (avail >= n) {
+      this._tokens = avail - n;
       return true;
     }
     return false;
   }
 
   msUntil(n = 1) {
-    if (!_isPositiveFinite(n)) {
-      throw new RangeError('n must be a positive finite number');
+    if (!_isPosFinite(n)) {
+      throw new RangeError('n pozitif sonlu sayı olmalıdır');
     }
-    this._refill();
-    if (this.tokens >= n) {
-      return 0;
-    }
+
+    // n > capacity ise asla olamaz
     if (n > this.capacity) {
       return Infinity;
     }
+
+    this._refill();
+    const avail = this._tokens;
+    if (avail >= n) {
+      return 0;
+    }
+
+    const needed = n - avail;
     if (this.refillPerSecond <= 0) {
       return Infinity;
     }
-    const needed = n - this.tokens;
+
     const ms = (needed / this.refillPerSecond) * 1000;
     return Math.ceil(ms);
   }

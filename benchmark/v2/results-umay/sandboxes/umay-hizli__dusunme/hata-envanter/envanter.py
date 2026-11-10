@@ -3,7 +3,7 @@ class Envanter:
 
     def __init__(self, baslangic=None):
         """baslangic: {ürün: adet} sözlüğü. Kopyalanır; dışarıdaki sözlük değişmez."""
-        self.stok = dict(baslangic or {})
+        self.stok = dict(baslangic) if baslangic is not None else {}
         self.fiyat = {}
 
     def ekle(self, urun, adet, fiyat=None):
@@ -19,9 +19,11 @@ class Envanter:
         """Stoktan düşer. Stok yetersizse ya da ürün yoksa ValueError; stok tam sıfıra inebilir."""
         if not isinstance(adet, int) or isinstance(adet, bool) or adet <= 0:
             raise ValueError("adet pozitif bir tam sayı olmalı")
-        if urun not in self.stok or self.stok[urun] < adet:
+        mevcut = self.stok.get(urun, 0)
+        if mevcut >= adet:
+            self.stok[urun] = mevcut - adet
+        else:
             raise ValueError("yetersiz stok")
-        self.stok[urun] -= adet
 
     def toplam_deger(self):
         """Fiyatı bilinen ürünlerin stok değerleri toplamı, kuruşa (2 ondalık) yuvarlanmış."""
@@ -29,4 +31,4 @@ class Envanter:
 
     def kritik(self, esik):
         """Stoğu esik değerine EŞİT ya da altında olan ürünlerin adlarını alfabetik sırayla döndürür."""
-        return sorted(u for u, a in self.stok.items() if a <= esik)
+        return sorted([u for u, a in self.stok.items() if a <= esik])

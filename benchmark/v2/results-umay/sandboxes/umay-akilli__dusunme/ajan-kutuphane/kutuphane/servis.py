@@ -17,7 +17,7 @@ class KutuphaneServisi:
     def _aktif(self, kitap_id):
         return next((k for k in self.kayitlar if k.kitap_id == kitap_id and k.iade is None), None)
 
-    def _maks_kitap_sayisi(self, uye: Uye) -> int:
+    def _limit(self, uye: Uye) -> int:
         return 5 if uye.tur == "ogrenci" else 3
 
     def _aktif_sayisi(self, uye_id: int) -> int:
@@ -30,40 +30,42 @@ class KutuphaneServisi:
         if self._aktif(kitap_id):
             raise ValueError("kitap zaten ödünçte")
         uye = self.uyeler[uye_id]
-        if self._aktif_sayisi(uye_id) >= self._maks_kitap_sayisi(uye):
-            raise ValueError("üye kitap sınırına ulaştı")
+        if self._aktif_sayisi(uye_id) >= self._limit(uye):
+            raise ValueError("ödünç sınırı aşıldı")
         kayit = Odunc(kitap_id, uye_id, tarih)
         self.kayitlar.append(kayit)
         return kayit
 
-    def _ceza_hesapla(self, kayit: Odunc, iade_tarihi: date) -> float:
-        gun_sayisi = (iade_tarihi - kayit.alinma).days
-        if gun_sayisi <= 14:
-            return 0.0
-        gecikme = gun_sayisi - 14
-        if gecikme <= 7:
-            ceza = gecikme * 2.5
-        else:
-            ceza = 7 * 2.5 + (gecikme - 7) * 5.0
-        if ceza > 150.0:
-            ceza = 150.0
-        uye = self.uyeler[kayit.uye_id]
-        if uye.tur == "ogrenci":
-            ceza *= 0.5
-        return round(ceza, 2)
-
     def iade_al(self, kitap_id, tarih):
-        """Kitabın iadesini alır, cezayı hesaplayıp kayda yazar ve ödünç kaydını döndürür."""
+        """Kitabın iadesini alır, cezayı hesaplar ve ödünç kaydını döndürür. Kitap ödünçte değilse ValueError."""
         kayit = self._aktif(kitap_id)
         if kayit is None:
             raise ValueError("kitap ödünçte değil")
         kayit.iade = tarih
-        kayit.ceza = self._ceza_hesapla(kayit, tarih)
+        kayit.ceza = self._ceza_hesapla(kayit)
         return kayit
+
+    def _ceza_hesapla(self, kayit: Odunc) -> float:
+        if kayit.iade is None:
+            return 0.0
+        gun_sayisi = (kayit.iade - kayit.alinma).days
+        gecikme = gun_sayisi - 14
+        if gecikme <= 0:
+            return 0.0
+        if gecikme <= 7:
+            ceza = gecikme * 2.5
+        else:
+            ceza = 7 * 2.5 + (gecikme - 7) * 5.0
+        if ceza > 150:
+            ceza = 150.0
+        uye = self.uyeler.get(kayit.uye_id)
+        if uye and uye.tur == "ogrenci":
+            ceza *= 0.5
+        return round(ceza, 2)
+
+    def toplam_ceza(self, uye_id: int) -> float:
+        """Üyenin iade edilmiş tüm ödünçlerinin cezaları toplamı."""
+        return round(sum(k.ceza for k in self.kayitlar if k.uye_id == uye_id and k.iade is not None), 2)
 
     def oduncteki_kitaplar(self, uye_id):
         return sorted(k.kitap_id for k in self.kayitlar if k.uye_id == uye_id and k.iade is None)
-
-    def toplam_ceza(self, uye_id) -> float:
-        """Üyenin iade edilmiş tüm ödünçlerinin cezaları toplamı."""
-        return round(sum(k.ceza for k in self.kayitlar if k.uye_id == uye_id and k.iade is not None), 2)

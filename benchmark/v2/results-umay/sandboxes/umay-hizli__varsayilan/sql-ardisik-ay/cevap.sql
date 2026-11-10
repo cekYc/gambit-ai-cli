@@ -1,37 +1,42 @@
-WITH aylar AS (
-  SELECT DISTINCT musteri_id, substr(tarih, 1, 7) AS ay
-  FROM siparisler
+WITH m AS (
+    SELECT musteri_id, strftime('%Y-%m', tarih) AS ym
+    FROM siparisler
+    GROUP BY musteri_id, ym
 ),
-sira AS (
-  SELECT musteri_id, ay,
-         ROW_NUMBER() OVER (PARTITION BY musteri_id ORDER BY ay) AS rn,
-         CAST(substr(ay, 1, 4) AS INTEGER) * 12 + CAST(substr(ay, 6, 2) AS INTEGER) AS ay_idx
-  FROM aylar
+numbered AS (
+    SELECT musteri_id, ym,
+           CAST(strftime('%Y', ym) AS INTEGER) * 12
+           + CAST(strftime('%m', ym) AS INTEGER) AS mon_idx
+    FROM m
 ),
-gruplar AS (
-  SELECT musteri_id, ay,
-         ay_idx - rn AS grp
-  FROM sira
+grp AS (
+    SELECT musteri_id, ym, mon_idx,
+           mon_idx - ROW_NUMBER() OVER (
+               PARTITION BY musteri_id
+               ORDER BY ym
+           ) AS grp
+    FROM numbered
 ),
-seriler AS (
-  SELECT musteri_id,
-         COUNT(*) AS uzunluk,
-         MIN(ay) AS baslangic_ay
-  FROM gruplar
-  GROUP BY musteri_id, grp
+agg AS (
+    SELECT musteri_id, grp,
+           COUNT(*) AS len,
+           MIN(ym) AS start_ym
+    FROM grp
+    GROUP BY musteri_id, grp
 ),
-en_uzun AS (
-  SELECT musteri_id, uzunluk, baslangic_ay,
-         ROW_NUMBER() OVER (
-           PARTITION BY musteri_id
-           ORDER BY uzunluk DESC, baslangic_ay ASC
-         ) AS rnk
-  FROM seriler
+best AS (
+    SELECT musteri_id, len, start_ym,
+           ROW_NUMBER() OVER (
+               PARTITION BY musteri_id
+               ORDER BY len DESC, start_ym ASC
+           ) AS rn
+    FROM agg
 )
 SELECT m.ad AS musteri_adi,
-       e.uzunluk AS seri_uzunlugu,
-       e.baslangic_ay AS baslangic_ay
-FROM en_uzun e
-JOIN musteriler m ON m.id = e.musteri_id
-WHERE e.rnk = 1 AND e.uzunluk >= 3
-ORDER BY e.uzunluk DESC, m.ad ASC;
+       b.len AS seri_uzunlugu,
+       b.start_ym AS baslangic_ayi
+FROM best b
+JOIN musteriler m ON m.id = b.musteri_id
+WHERE b.rn = 1
+  AND b.len >= 3
+ORDER BY b.len DESC, m.ad ASC;

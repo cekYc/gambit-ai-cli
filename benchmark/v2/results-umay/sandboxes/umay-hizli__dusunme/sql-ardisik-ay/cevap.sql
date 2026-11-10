@@ -1,43 +1,50 @@
 WITH aylar AS (
   SELECT DISTINCT
-    s.musteri_id,
-    strftime('%Y', s.tarih) || '-' || strftime('%m', s.tarih) AS ay,
-    CAST(strftime('%Y', s.tarih) AS INTEGER) * 12 + CAST(strftime('%m', s.tarih) AS INTEGER) AS ay_deger
-  FROM siparisler s
+    m.id AS musteri_id,
+    m.ad AS musteri_ad,
+    strftime('%Y-%m', s.tarih) AS ay_ym
+  FROM musteriler m
+  JOIN siparisler s ON s.musteri_id = m.id
+),
+ay_no AS (
+  SELECT
+    musteri_id,
+    musteri_ad,
+    ay_ym,
+    (CAST(substr(ay_ym, 1, 4) AS INTEGER) * 12 + CAST(substr(ay_ym, 6, 2) AS INTEGER)) AS ay_sayi
+  FROM aylar
 ),
 gruplar AS (
   SELECT
-    a.*,
-    ROW_NUMBER() OVER (PARTITION BY musteri_id ORDER BY ay_deger) AS rn,
-    ay_deger - ROW_NUMBER() OVER (PARTITION BY musteri_id ORDER BY ay_deger) AS grp
-  FROM aylar a
+    musteri_id,
+    musteri_ad,
+    ay_ym,
+    ay_sayi,
+    (ay_sayi - ROW_NUMBER() OVER (PARTITION BY musteri_id ORDER BY ay_sayi)) AS grp
+  FROM ay_no
 ),
 seriler AS (
   SELECT
     musteri_id,
-    COUNT(*) AS uzunluk,
-    MIN(ay) AS baslangic_ay,
-    MIN(ay_deger) AS baslangic_deger
+    musteri_ad,
+    MIN(ay_ym) AS baslangic_ay,
+    COUNT(*) AS uzunluk
   FROM gruplar
-  GROUP BY musteri_id, grp
+  GROUP BY musteri_id, musteri_ad, grp
 ),
-en_uzun_seri AS (
+en_uzun AS (
   SELECT
-    s.musteri_id,
-    s.uzunluk,
-    s.baslangic_ay,
-    ROW_NUMBER() OVER (
-      PARTITION BY s.musteri_id
-      ORDER BY s.uzunluk DESC, s.baslangic_deger
-    ) AS rn
-  FROM seriler s
+    musteri_id,
+    musteri_ad,
+    baslangic_ay,
+    uzunluk,
+    ROW_NUMBER() OVER (PARTITION BY musteri_id ORDER BY uzunluk DESC, baslangic_ay ASC) AS rn
+  FROM seriler
 )
 SELECT
-  m.ad AS mustteri_adi,
-  e.uzunluk AS seri_uzunlugu,
-  e.baslangic_ay AS baslangic_ay
-FROM en_uzun_seri e
-JOIN musteriler m ON m.id = e.musteri_id
-WHERE e.rn = 1
-  AND e.uzunluk >= 3
-ORDER BY e.uzunluk DESC, m.ad ASC;
+  musteri_ad AS musteri_adi,
+  uzunluk AS seri_uzunlugu_ay,
+  baslangic_ay AS seri_baslangic_ay
+FROM en_uzun
+WHERE rn = 1 AND uzunluk >= 3
+ORDER BY uzunluk DESC, musteri_ad ASC;

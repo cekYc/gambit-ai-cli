@@ -3,7 +3,7 @@ from datetime import date, timedelta
 
 def artik_yil(y):
     """Miladi takvimde artık yıl mı: 4'e bölünen yıllar; ancak 100'e bölünüp 400'e bölünmeyenler değil."""
-    return (y % 4 == 0 and y % 100 != 0) or y % 400 == 0
+    return y % 4 == 0 and (y % 100 != 0 or y % 400 == 0)
 
 
 def ay_sonu(y, m):
@@ -23,6 +23,8 @@ def ay_ekle(d, n):
 
 def is_gunu_say(bas, bit):
     """bas ve bit DAHİL aradaki hafta içi (Pzt-Cum) günlerin sayısı; bas > bit ise 0."""
+    if bas > bit:
+        return 0
     gun = 0
     d = bas
     while d <= bit:

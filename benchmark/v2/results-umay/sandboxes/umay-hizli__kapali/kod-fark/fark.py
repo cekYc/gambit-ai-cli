@@ -1,29 +1,34 @@
+"""Minimal düzenleme dizisi üreten yardımcı modül.
+
+Ana arayüz:
+    satir_farki(a: list[str], b: list[str]) -> list[tuple[str, str]]
+"""
+
 from __future__ import annotations
 
-from difflib import SequenceMatcher
+import difflib
+from typing import List, Tuple
 
 
 def satir_farki(a: list[str], b: list[str]) -> list[tuple[str, str]]:
-    """a listesini b'ye çeviren minimal düzenleme dizisini döndürür.
+    """``a`` listesini ``b`` listesine çeviren minimal düzenleme dizisi.
 
-    Her eleman şunlardan biridir:
-      (" ", satır)  -> iki tarafta ortak
-      ("-", satır)  -> a'dan silinen
-      ("+", satır)  -> b'ye eklenen
+    Her eleman:
+      - (" ", satir): a ve b'de ortak satır
+      - ("-", satir): sadece a'daki silinen satır
+      - ("+", satir): sadece b'deki eklenen satır
 
-    " " ve "-" sırasıyla a'yı, " " ve "+" sırasıyla b'yi verir.
-    Ortak satır sayısı en fazla olur (LCS). Ardışık değişikliklerde
-    silmeler eklemelerden önce gelir.
+    Kısıtlamalar:
+      - " " ve "-" elemanları sırayla ``a``'yı verir.
+      - " " ve "+" elemanları sırayla ``b``'yi verir.
+      - Ortak satır sayısı maksimum olur (en uzun ortak alt dizi).
+      - Ardışık bir ekleme sonrasına silme gelmez: "+" ardından "-" olmaz.
     """
-    if not a:
-        return [("+", x) for x in b]
-    if not b:
-        return [("-", x) for x in a]
 
-    matcher = SequenceMatcher(None, a, b, autojunk=False)
-    sonuc = []
+    sm = difflib.SequenceMatcher(None, a, b, autojunk=False)
+    sonuc: list[tuple[str, str]] = []
 
-    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
         if tag == "equal":
             for k in range(i1, i2):
                 sonuc.append((" ", a[k]))
@@ -34,11 +39,13 @@ def satir_farki(a: list[str], b: list[str]) -> list[tuple[str, str]]:
             for k in range(j1, j2):
                 sonuc.append(("+", b[k]))
         elif tag == "replace":
-            # replace bloğunu silme-önce-ekle sırasıyla ayır.
+            # Kural: "+" elemanının hemen ardından "-" gelmemeli.
+            # Bu yüzden önce tüm silmeler, sonra tüm eklemeler eklenir.
             for k in range(i1, i2):
                 sonuc.append(("-", a[k]))
             for k in range(j1, j2):
                 sonuc.append(("+", b[k]))
 
     return sonuc
-
+"""
+"""

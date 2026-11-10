@@ -16,16 +16,15 @@ def ay_ekle(d, n):
     """d tarihine n ay ekler (n negatif olabilir). Gün yeni ayda yoksa ayın son gününe çekilir:
     31 Ocak 2024 + 1 ay = 29 Şubat 2024."""
     m = d.month + n
-    y = d.year + m // 12
-    m = m % 12
-    if m == 0:
-        m = 12
-        y -= 1
+    y = d.year + (m - 1) // 12
+    m = (m - 1) % 12 + 1
     return date(y, m, min(d.day, ay_sonu(y, m)))
 
 
 def is_gunu_say(bas, bit):
     """bas ve bit DAHİL aradaki hafta içi (Pzt-Cum) günlerin sayısı; bas > bit ise 0."""
+    if bas > bit:
+        return 0
     gun = 0
     d = bas
     while d <= bit:

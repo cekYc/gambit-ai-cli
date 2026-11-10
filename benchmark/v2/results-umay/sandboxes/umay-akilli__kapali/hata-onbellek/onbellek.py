@@ -1,6 +1,5 @@
 import time
 import functools
-import inspect
 
 
 def onbellekle(ttl=None, saat=time.monotonic):
@@ -19,29 +18,26 @@ def onbellekle(ttl=None, saat=time.monotonic):
         onbellek = {}
         isabet = 0
         iska = 0
-        sig = inspect.signature(f)
 
         @functools.wraps(f)
         def sarmal(*args, **kwargs):
             nonlocal isabet, iska
+            
+            # Hashlenebilir anahtar oluştur (kwargs sırası önemsiz)
             try:
-                # Tüm argümanları isimli (keyword) formuna bağla
-                bound = sig.bind(*args, **kwargs)
-                bound.apply_defaults()
-                # Sırasız keyword argümanları tuple'ı (sıralı)
-                anahtar = tuple(sorted(bound.arguments.items()))
-                hash(anahtar)  # hashlene bilirlik testi
+                anahtar = (args, tuple(sorted(kwargs.items())))
+                hash(anahtar)
             except TypeError:
-                # Hashlenemez argüman (ör. liste) -> önbelleksiz çalıştır
+                # Hashlenemezse önbelleksiz çalıştır
                 iska += 1
                 return f(*args, **kwargs)
 
             if anahtar in onbellek:
                 deger, zaman = onbellek[anahtar]
-                if ttl is None or saat() - zaman <= ttl:  # tam ttl anında hâlâ geçerli
+                if ttl is None or saat() - zaman <= ttl:
                     isabet += 1
                     return deger
-                # TTL dolmuş, silip yeniden hesapla
+                # TTL dolmuşsa sil ve yeniden çalıştır
                 del onbellek[anahtar]
 
             iska += 1

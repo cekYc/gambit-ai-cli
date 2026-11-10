@@ -1,6 +1,5 @@
 import time
-
-_onbellek = {}
+from functools import wraps
 
 
 def onbellekle(ttl=None, saat=time.monotonic):
@@ -16,22 +15,38 @@ def onbellekle(ttl=None, saat=time.monotonic):
       `bilgi()` {"isabet": n, "iska": m} döndürür (iska: fonksiyonun gerçekten çalıştırıldığı çağrılar).
     """
     def dekorator(f):
+        _onbellek = {}
         isabet = iska = 0
 
+        @wraps(f)
         def sarmal(*args, **kwargs):
             nonlocal isabet, iska
-            anahtar = args
+            try:
+                anahtar = (args, tuple(sorted(kwargs.items())))
+                hash(anahtar)
+            except TypeError:
+                iska += 1
+                return f(*args, **kwargs)
+
             if anahtar in _onbellek:
                 deger, zaman = _onbellek[anahtar]
-                if ttl is None or saat() - zaman > ttl:
+                if ttl is None or saat() - zaman <= ttl:
                     isabet += 1
                     return deger
+
             iska += 1
             deger = f(*args, **kwargs)
             _onbellek[anahtar] = (deger, saat())
             return deger
 
-        sarmal.temizle = lambda: _onbellek.clear()
-        sarmal.bilgi = lambda: {"isabet": isabet, "iska": iska}
+        def temizle():
+            _onbellek.clear()
+
+        def bilgi():
+            return {"isabet": isabet, "iska": iska}
+
+        sarmal.temizle = temizle
+        sarmal.bilgi = bilgi
         return sarmal
+
     return dekorator

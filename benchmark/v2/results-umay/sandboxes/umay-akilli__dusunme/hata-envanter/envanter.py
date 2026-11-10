@@ -1,9 +1,9 @@
 class Envanter:
     """Basit stok takibi."""
 
-    def __init__(self, baslangic={}):
+    def __init__(self, baslangic=None):
         """baslangic: {ürün: adet} sözlüğü. Kopyalanır; dışarıdaki sözlük değişmez."""
-        self.stok = baslangic.copy()
+        self.stok = dict(baslangic) if baslangic is not None else {}
         self.fiyat = {}
 
     def ekle(self, urun, adet, fiyat=None):

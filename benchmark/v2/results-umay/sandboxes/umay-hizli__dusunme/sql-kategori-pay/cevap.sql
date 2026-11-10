@@ -1,35 +1,27 @@
--- 2025 yili bazinda kategori cirolari, yuzde payi ve DENSE_RANK sirasi
--- TUM kategoriler listelenir; 2025'de satis olmayanlar 0 ciro ve 0.0 pay ile.
-WITH sales_2025 AS (
-    SELECT
-        u.kategori AS kategori,
-        SUM(sk.adet * sk.birim_fiyat) AS ciro
-    FROM urunler u
-    JOIN siparis_kalemleri sk ON sk.urun_id = u.id
-    JOIN siparisler s ON s.id = sk.siparis_id
-    WHERE substr(s.tarih, 1, 4) = '2025'
-    GROUP BY u.kategori
-),
-kategoriler AS (
+WITH tum_kategoriler AS (
     SELECT DISTINCT kategori FROM urunler
 ),
-agg AS (
+siparisler_2025 AS (
+    SELECT id FROM siparisler WHERE substr(tarih, 1, 4) = '2025'
+),
+kategori_cirolari AS (
     SELECT
         k.kategori,
-        COALESCE(s.ciro, 0.0) AS ciro
-    FROM kategoriler k
-    LEFT JOIN sales_2025 s ON s.kategori = k.kategori
+        COALESCE(SUM(sk.adet * sk.birim_fiyat), 0.0) AS ciro
+    FROM tum_kategoriler k
+    LEFT JOIN urunler u ON u.kategori = k.kategori
+    LEFT JOIN siparis_kalemleri sk ON sk.urun_id = u.id
+    LEFT JOIN siparisler_2025 s ON s.id = sk.siparis_id
+    GROUP BY k.kategori
 ),
-toplam AS (
-    SELECT SUM(ciro) AS toplam_ciro FROM agg
+toplam_ciro AS (
+    SELECT SUM(ciro) AS toplam FROM kategori_cirolari
 )
 SELECT
-    kategori,
-    round(ciro, 2) AS ciro,
-    CASE
-        WHEN t.toplam_ciro = 0 THEN 0.0
-        ELSE round(ciro * 100.0 / t.toplam_ciro, 1)
-    END AS yuzde,
-    DENSE_RANK() OVER (ORDER BY ciro DESC) AS sira
-FROM agg, toplam t
-ORDER BY sira ASC, kategori ASC;
+    kc.kategori AS kategori,
+    ROUND(kc.ciro, 2) AS ciro,
+    COALESCE(ROUND(kc.ciro * 100.0 / NULLIF(tc.toplam, 0), 1), 0.0) AS yuzde,
+    DENSE_RANK() OVER (ORDER BY kc.ciro DESC) AS sira
+FROM kategori_cirolari kc
+CROSS JOIN toplam_ciro tc
+ORDER BY kc.ciro DESC, kc.kategori ASC;

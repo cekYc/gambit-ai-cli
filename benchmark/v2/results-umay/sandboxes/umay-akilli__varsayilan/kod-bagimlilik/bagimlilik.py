@@ -1,123 +1,166 @@
 from __future__ import annotations
-import heapq
 from collections import defaultdict, deque
 
 
 class DonguHatasi(ValueError):
-    """Topolojik sıralama sırasında döngü tespit edildiğinde fırlatılır."""
+    """Bağımlılık grafiğinde döngü tespit edildiğinde fırlatılır."""
     def __init__(self, dongu: list[str]):
-        super().__init__("Bağımlılık grafiğinde döngü var: " + " -> ".join(dongu) + " -> " + dongu[0])
         self.dongu = dongu
+        super().__init__(f"Bağımlılık döngüsü tespit edildi: {' -> '.join(dongu)}")
 
 
 def kurulum_sirasi(deps: dict[str, list[str]]) -> list[str]:
     """
-    Bağımlılık sözlüğüne göre paketlerin kurulum sırasını döndürür.
+    Bağımlılık grafiğini toplolojik olarak sıralar (Kahn algoritması).
     
     Args:
-        deps: {paket: [bağımlılıklar]} sözlüğü. Her paket kendi bağımlılıklarından sonra gelir.
+        deps: {paket: [bağımlılıklar]} sözlüğü. Bağımlılıklar paketten önce kurulmalıdır.
     
     Returns:
-        Topolojik sırayla sıralanmış paket listesi (alfabetik kırpma ile).
+        Kurulabilir paketlerin listesi (bağımlılıklar önce, sonra paket).
+        Aynı anda kurulabilecek paketler alfabetik sırada alınır.
     
     Raises:
-        DonguHatasi: Grafikte döngü varsa, dongu özniteliği döngüyü tutar.
+        DonguHatasi: Grafikta döngü varsa, döngü paketleriyle birlikte fırlatılır.
     """
-    # Tüm düğümleri topla (anahtarlar + bağımlılık olarak geçenler)
+    # Tüm düğümleri topla (anahtarlar + bağımlılıklar)
     all_nodes: set[str] = set(deps.keys())
     for dep_list in deps.values():
         all_nodes.update(dep_list)
     
-    # Giriş dereceleri ve komşuluk listesi
-    in_degree: dict[str, int] = {node: 0 for node in all_nodes}
-    adj: dict[str, list[str]] = {node: [] for node in all_nodes}
+    # Giriş dereceleri (in-degree) ve ters komşuluk listesi
+    in_degree: dict[str, int] = defaultdict(int)
+    reverse_adj: dict[str, list[str]] = defaultdict(list)
     
-    # Kenarları ekle (bağımlılık -> paket)
-    for paket, bagimliliklar in deps.items():
-        # Tekrar eden bağımlılıkları temizle
-        unique_deps = set(bagimliliklar)
+    for node in all_nodes:
+        # Her düğüm için giriş derecesi 0'dan başlar
+        in_degree[node] = 0
+    
+    for node, dep_list in deps.items():
+        # Tekrar eden bağımlılıkları tekilleştir
+        unique_deps = set(dep_list)
         for dep in unique_deps:
-            adj[dep].append(paket)
-            in_degree[paket] += 1
+            reverse_adj[dep].append(node)
+            in_degree[node] += 1
     
-    # Komşuları alfabetik sırala (deterministik çıktı için)
-    for node in adj:
-        adj[node].sort()
+    # Sıfır giriş dereceli düğümleri alfabetik sıra ile işlemek için deque
+    # İlk başta sıralı bir liste olarak al
+    zero_queue = deque(sorted([n for n in all_nodes if in_degree[n] == 0]))
     
-    # Kahn algoritması + min-heap (alfabetik kırpma)
+    result: list[str] = []
+    
+    while zero_queue:
+        current = zero_queue.popleft()
+        result.append(current)
+        
+        # Komşuların giriş derecesini azalt
+        for neighbor in reverse_adj[current]:
+            in_degree[neighbor] -= 1
+            if in_degree[neighbor] == 0:
+                zero_queue.append(neighbor)
+        
+        # Her adımda kuyruğu yeniden sırala (alfabetik sıra için)
+        # Ancak bu O(n log n) olabilir. Daha verimli: heap kullan.
+        # Basitlik için kuyruğu sıralı tutalım - ama Python'da deque sıralı değil.
+        # Doğru yaklaşım: heapq kullan.
+    
+    # Yukarıdaki mantık hatalı: deque sıralı tutmuyor. Yeniden yazalım.
+    
+    # ... (fonksiyon tamamlanacak)
+    return result
+
+
+def kurulum_sirasi_v2(deps: dict[str, list[str]]) -> list[str]:
+    """Doğru implementasyon: heapq ile alfabetik sıra."""
+    import heapq
+    
+    all_nodes: set[str] = set(deps.keys())
+    for dep_list in deps.values():
+        all_nodes.update(dep_list)
+    
+    in_degree: dict[str, int] = {node: 0 for node in all_nodes}
+    reverse_adj: dict[str, list[str]] = defaultdict(list)
+    
+    for node, dep_list in deps.items():
+        unique_deps = set(dep_list)
+        for dep in unique_deps:
+            reverse_adj[dep].append(node)
+            in_degree[node] += 1
+    
+    # Min-heap ile alfabetik sıra
     heap = [node for node in all_nodes if in_degree[node] == 0]
     heapq.heapify(heap)
     
     result: list[str] = []
     
     while heap:
-        node = heapq.heappop(heap)
-        result.append(node)
+        current = heapq.heappop(heap)
+        result.append(current)
         
-        for neighbor in adj[node]:
+        for neighbor in reverse_adj[current]:
             in_degree[neighbor] -= 1
             if in_degree[neighbor] == 0:
                 heapq.heappush(heap, neighbor)
     
-    # Döngü kontrolü: işlenmeyen düğüm kaldıysa döngü var
     if len(result) != len(all_nodes):
-        # Döngüyü bulmak için DFS kullan
-        remaining = {node for node in all_nodes if node not in result}
-        dongu = _find_cycle(remaining, adj, deps)
-        raise DonguHatasi(dongu)
+        # Döngü var - döngüyü bul
+        cycle = _find_cycle(deps, all_nodes)
+        raise DonguHatasi(cycle)
     
     return result
 
 
-def _find_cycle(remaining: set[str], adj: dict[str, list[str]], deps: dict[str, list[str]]) -> list[str]:
-    """Kalan düğümlerde bir döngü bulur ve alfabetik en küçüğü başlangıç yapar."""
-    # Bağımlılık yönünde graf: paket -> bağımlılıkları
-    dep_adj = {node: [] for node in remaining}
-    for pkg in remaining:
-        for dep in deps.get(pkg, []):
-            if dep in remaining:
-                dep_adj[pkg].append(dep)
-    for node in dep_adj:
-        dep_adj[node].sort()
+def _find_cycle(deps: dict[str, list[str]], all_nodes: set[str]) -> list[str]:
+    """DFS ile döngü bulur, alfabetik en küçük paketten başlayacak şekilde döndürür."""
+    # Renkler: 0=beyaz (ziyaret edilmedi), 1=gri (işleniyor), 2=siyah (bitirildi)
+    color: dict[str, int] = {node: 0 for node in all_nodes}
+    parent: dict[str, str | None] = {node: None for node in all_nodes}
+    cycle_path: list[str] | None = None
     
-    visited = set()
-    rec_stack = []  # DFS yolu
-    on_stack = set()
+    # Komşuluk listesi (ileri yönlü: paket -> bağımlılıkları)
+    adj: dict[str, list[str]] = defaultdict(list)
+    for node, dep_list in deps.items():
+        for dep in set(dep_list):
+            adj[node].append(dep)
     
-    def dfs(node: str) -> list[str] | None:
-        visited.add(node)
-        rec_stack.append(node)
-        on_stack.add(node)
-        
-        for neighbor in dep_adj.get(node, []):
-            if neighbor not in visited:
-                cycle = dfs(neighbor)
-                if cycle:
-                    return cycle
-            elif neighbor in on_stack:
-                # Döngü bulundu: neighbor'dan node'a kadar olan kısım
-                idx = rec_stack.index(neighbor)
-                cycle = rec_stack[idx:]
-                return _normalize_cycle(cycle)
-        
-        rec_stack.pop()
-        on_stack.remove(node)
-        return None
+    # Alfabetik sırayla DFS başlat - en küçük paketten başlayan döngüyü bulmak için
+    for start_node in sorted(all_nodes):
+        if color[start_node] == 0:
+            stack: list[tuple[str, int]] = [(start_node, 0)]  # (node, next_child_index)
+            color[start_node] = 1
+            
+            while stack:
+                node, child_idx = stack[-1]
+                
+                if child_idx < len(adj[node]):
+                    neighbor = adj[node][child_idx]
+                    stack[-1] = (node, child_idx + 1)
+                    
+                    if color[neighbor] == 0:
+                        color[neighbor] = 1
+                        parent[neighbor] = node
+                        stack.append((neighbor, 0))
+                    elif color[neighbor] == 1:
+                        # Döngü bulundu! neighbor -> ... -> node -> neighbor
+                        cycle = [neighbor]
+                        curr = node
+                        while curr != neighbor:
+                            cycle.append(curr)
+                            curr = parent[curr]
+                        cycle.reverse()  # neighbor -> ... -> node sırasına getir
+                        
+                        # Döngüyü alfabetik en küçük paketle başlat
+                        min_idx = cycle.index(min(cycle))
+                        cycle = cycle[min_idx:] + cycle[:min_idx]
+                        
+                        return cycle
+                else:
+                    color[node] = 2
+                    stack.pop()
     
-    # Alfabetik sırayla başla (en küçük döngüyü bulmak için)
-    for node in sorted(remaining):
-        if node not in visited:
-            cycle = dfs(node)
-            if cycle:
-                return cycle
-    
-    # Fallback (olmamalı)
-    return sorted(remaining)[:1]
+    # Bulunamazsa (olmamalı), boş liste döndür
+    return []
 
 
-def _normalize_cycle(cycle: list[str]) -> list[str]:
-    """Döngüyü alfabetik en küçük elemanla başlatacak şekilde döndürür."""
-    if not cycle:
-        return cycle
-    min_idx = min(range(len(cycle)), key=lambda i: cycle[i])
-    return cycle[min_idx:] + cycle[:min_idx]
+# Ana fonksiyon olarak v2'yi kullan
+kurulum_sirasi = kurulum_sirasi_v2

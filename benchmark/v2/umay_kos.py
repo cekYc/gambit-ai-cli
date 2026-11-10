@@ -5,6 +5,8 @@
   python umay_kos.py --model umay-hizli       # başka model
   python umay_kos.py --no-thinking            # düşünme kapalı (enable_thinking: false)
   python umay_kos.py --server-default-thinking  # düşünme alanı gönderilmez, Umay karar verir
+  python umay_kos.py --sure-siniri-yok        # görev başına süre sınırı yok (yalnızca 2 saatlik güvenlik tavanı)
+  python umay_kos.py --out X --sandbox-root results-umay\\sandboxes  # sonuçlar X'e, görev klasörleri her zamanki yere
   python umay_kos.py --report                 # yalnızca raporu yeniden üret
   python umay_kos.py --umay "C:\\yol\\Umay-CLI" # Umay CLI klasörü (varsayılan: UMAY_CLI_DIR)
 
@@ -26,6 +28,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 
@@ -40,6 +43,11 @@ from core import TASKS, Trace  # noqa: E402
 RESULTS = HERE / "results-umay"
 DRIVER = HERE / "umay_ajan.mjs"
 DEFAULT_UMAY = os.environ.get("UMAY_CLI_DIR", r"C:\Users\erayc\OneDrive\Desktop\aaa")
+# --sure-siniri-yok: yavaş sunulan modellerin gecikmeden değil yetenekten ölçülmesi için (run.py'deki --no-time-limit gibi)
+NO_LIMIT = False
+# Görev klasörlerinin kökü (varsayılan: <sonuç klasörü>/sandboxes). Model çalışma klasörünü sistem isteminde gördüğü
+# için ayrı klasörde koşan yapılandırmalar da görev klasörünü önceki koşulardaki yerde (results-umay/sandboxes) açar.
+SANDBOXES: Path | None = None
 
 
 def log(msg: str) -> None:
@@ -48,10 +56,10 @@ def log(msg: str) -> None:
 
 def attempt(task: core.Task, umay: Path, model: str, mode: str, key: str, base_url: str) -> dict:
     label = f"{model}__{mode}"
-    sandbox = RESULTS / "sandboxes" / label / task.id
+    sandbox = (SANDBOXES or RESULTS / "sandboxes") / label / task.id
     run.fresh_dir(sandbox)
     task.setup(sandbox)
-    budget = run.BUDGET[task.tools]
+    budget = run.NO_LIMIT_CAP if NO_LIMIT else run.BUDGET[task.tools]
     env = {**os.environ, "UMAY_API_KEY": key, "UMAY_SETTINGS": str(RESULTS / "ayarlar.json"), "NO_COLOR": "1"}
     started = time.perf_counter()
     log_lines: list[str] = []
@@ -104,12 +112,15 @@ def attempt(task: core.Task, umay: Path, model: str, mode: str, key: str, base_u
         notes.append(f"çökme: {crash[:120]}")
     if done.get("blocked"):
         notes.append("engellenen: " + " | ".join(b[:60] for b in done["blocked"][:2]))
+    if done.get("emptyRetries"):
+        notes.append(f"boş akış yeniden gönderildi: {done['emptyRetries']}")
     calls = int(done.get("calls", 0))
     result = {
         "preset": model, "model_id": model, "mode": mode, "task": task.id, "category": task.category,
         "level": task.level, "weight": task.weight, "score": round(score, 4), "detail": detail,
         "notes": "; ".join(notes), "items": items, "wall": round(wall, 1), "tokens": int(done.get("tokens") or 0), "prompt_tokens": int(done.get("promptTokens") or 0),
         "calls": calls, "think_calls": calls if mode == "dusunme" else 0, "tool_calls": len(trace.events),
+        "empty_retries": int(done.get("emptyRetries") or 0),
         "timed_out": bool(done.get("timedOut")), "server_error": done.get("serverError", ""), "crash": crash,
         "time": datetime.now().isoformat(timespec="seconds"), "time_limit": budget, "seed": None,
         "sampling": "sunucu", "host": "umay-api", "agent": "umay-cli",
@@ -123,6 +134,51 @@ def attempt(task: core.Task, umay: Path, model: str, mode: str, key: str, base_u
     return result
 
 
+def healthy(model: str, key: str, base_url: str) -> tuple[bool, str]:
+    """Küçük bir akışlı istekle modelin şu an yanıt verip vermediğine bakar (metin ya da düşünce gelirse yanıt veriyor)."""
+    url = (base_url or "https://umayzeka.com/v1").rstrip("/") + "/chat/completions"
+    body = {"model": model, "messages": [{"role": "user", "content": 'Yalnızca "tamam" yaz.'}], "stream": True,
+            "enable_thinking": False, "chat_template_kwargs": {"enable_thinking": False}}
+    req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), method="POST", headers={
+        "Authorization": f"Bearer {key}", "Content-Type": "application/json", "Accept": "text/event-stream",
+        "User-Agent": "Umay-CLI-bench/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            for raw in resp:
+                line = raw.decode("utf-8", "replace").strip()
+                if not line.startswith("data:") or line[5:].strip() == "[DONE]":
+                    continue
+                try:
+                    j = json.loads(line[5:].strip())
+                except ValueError:
+                    continue
+                if j.get("error"):
+                    return False, str(j["error"])[:160]
+                for ch in j.get("choices") or []:
+                    d = ch.get("delta") or {}
+                    if d.get("content") or d.get("reasoning_content") or d.get("reasoning"):
+                        return True, ""
+        return False, "boş akış"
+    except Exception as e:  # HTTP hatası, bağlantı, zaman aşımı
+        return False, f"{type(e).__name__}: {e}".replace(key, "[gizli]")[:160]
+
+
+def wait_healthy(model: str, key: str, base_url: str, limit: float = 8 * 3600) -> None:
+    """Model yeniden yanıt verene kadar bekler: 2, 4, 8 ve en fazla 15 dakikada bir küçük bir istekle bakar.
+    Kesinti boyunca görevler art arda denenip sunucuya yük bindirmez; en fazla `limit` saniye bekler."""
+    started, delay = time.monotonic(), 120
+    while True:
+        ok, why = healthy(model, key, base_url)
+        if ok:
+            return
+        if time.monotonic() - started > limit:
+            log(f"    {model} {limit / 3600:.0f} saattir yanıt vermiyor; görev yine de deneniyor")
+            return
+        log(f"    {model} şu an yanıt vermiyor ({why[:100]}); {delay // 60} dk sonra tekrar bakılacak")
+        time.sleep(delay)
+        delay = min(delay * 2, 900)
+
+
 def run_task(task, umay, model, mode, key, base_url) -> dict:
     for n in range(3):
         res = attempt(task, umay, model, mode, key, base_url)
@@ -130,9 +186,12 @@ def run_task(task, umay, model, mode, key, base_url) -> dict:
         # Anahtar hatası tekrarla düzelmez; kota, bakım ve bağlantı sorunları için bekleyip yeniden dene
         if not error or "kabul edilmedi" in error or n == 2:
             return res
-        wait = 60 if "kota" in error or "sınır" in error else 20
-        log(f"    sunucu sorunu ({error[:90]}); {wait} sn sonra görev yeniden denenecek")
-        time.sleep(wait)
+        if "kota" in error or "sınır" in error:
+            log(f"    sunucu sorunu ({error[:90]}); 60 sn sonra görev yeniden denenecek")
+            time.sleep(60)
+        else:
+            log(f"    sunucu sorunu ({error[:90]}); model yeniden yanıt verince görev yeniden denenecek")
+            wait_healthy(model, key, base_url)
     return res
 
 
@@ -151,12 +210,14 @@ def compare() -> None:
 
 
 def main() -> int:
-    global RESULTS
+    global RESULTS, NO_LIMIT, SANDBOXES
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--umay", default=DEFAULT_UMAY, help="Umay CLI klasörü")
     ap.add_argument("--model", default="umay-akilli")
     ap.add_argument("--no-thinking", action="store_true", help="enable_thinking: false gönderir")
     ap.add_argument("--server-default-thinking", action="store_true", help="düşünme alanı göndermez, Umay karar verir")
+    ap.add_argument("--sure-siniri-yok", action="store_true", help="görev başına süre sınırı yok (2 saatlik tavan)")
+    ap.add_argument("--sandbox-root", default="", help="görev klasörlerinin kökü (varsayılan: <out>/sandboxes)")
     ap.add_argument("--only", default="", help="virgülle ayrılmış görev id önekleri")
     ap.add_argument("--base-url", default=os.environ.get("UMAY_BASE_URL", ""))
     ap.add_argument("--report", action="store_true")
@@ -165,6 +226,8 @@ def main() -> int:
     if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
         sys.stdout.reconfigure(encoding="utf-8")
     RESULTS = Path(a.out)
+    NO_LIMIT = a.sure_siniri_yok
+    SANDBOXES = Path(a.sandbox_root) if a.sandbox_root else None
     import rapor
     rapor.MODES.update(dusunme="düşünme açık", kapali="düşünme kapalı",
                        varsayilan="düşünme alanı gönderilmedi")
@@ -188,9 +251,10 @@ def main() -> int:
             if not r.get("server_error") and not r.get("crash")}
     todo = [t for t in tasks if (a.model, mode, t.id) not in done]
     RESULTS.mkdir(parents=True, exist_ok=True)
-    log(f"{a.model} · {mode} · {len(todo)}/{len(tasks)} görev çalıştırılacak · sonuçlar: {RESULTS}")
+    limit = "süre sınırı yok" if NO_LIMIT else "süre sınırı 8/5 dk"
+    log(f"{a.model} · {mode} · {limit} · {len(todo)}/{len(tasks)} görev çalıştırılacak · sonuçlar: {RESULTS}")
     run.append_jsonl(RESULTS / "configs.jsonl", {"preset": a.model, "model_id": a.model, "mode": mode,
-                                                 "status": "başladı", "agent": "umay-cli",
+                                                 "status": "başladı", "agent": "umay-cli", "time_limit": not NO_LIMIT,
                                                  "time": datetime.now().isoformat(timespec="seconds")})
     started = time.perf_counter()
     for i, task in enumerate(todo, 1):

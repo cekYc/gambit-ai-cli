@@ -1,444 +1,512 @@
-"""
-Küçük bir hesap dilini yorumlayan `calistir` fonksiyonu.
-`eval`, `exec`, `compile`, `ast` kullanmadan yazılmıştır.
-"""
+# hesap.py - Küçük bir hesap dili yorumlayıcısı
 
-from typing import Optional, List, Tuple, Union
+from typing import List, Optional, Union
 
 
 class Token:
-    __slots__ = ('type', 'value', 'pos')
-    
-    def __init__(self, type_: str, value: str, pos: int):
+    """Token tipleri."""
+    def __init__(self, type_: str, value: str, line: int, col: int):
         self.type = type_
         self.value = value
-        self.pos = pos
+        self.line = line
+        self.col = col
     
     def __repr__(self):
-        return f'Token({self.type}, {self.value!r}, {self.pos})'
+        return f"Token({self.type}, {self.value!r}, {self.line}:{self.col})"
 
 
-class Lexer:
-    """Basit bir lexer: program string'ini token'lara böler."""
-    
+class Tokenizer:
+    """Basit bir tokenizer: sayıları, tanımlayıcıları, operatörleri ayırır."""
     def __init__(self, text: str):
         self.text = text
         self.pos = 0
-        self.len = len(text)
+        self.line = 1
+        self.col = 1
+        self.tokens: List[Token] = []
     
-    def peek(self) -> str:
-        if self.pos < self.len:
-            return self.text[self.pos]
-        return ''
+    def current_char(self) -> Optional[str]:
+        if self.pos >= len(self.text):
+            return None
+        return self.text[self.pos]
     
-    def advance(self) -> str:
-        ch = self.peek()
-        self.pos += 1
-        return ch
+    def advance(self):
+        if self.pos < len(self.text):
+            ch = self.text[self.pos]
+            self.pos += 1
+            if ch == '\n':
+                self.line += 1
+                self.col = 1
+            else:
+                self.col += 1
     
     def skip_whitespace(self):
-        while self.pos < self.len and self.text[self.pos] in ' \t\r':
-            self.pos += 1
+        while self.current_char() is not None and self.current_char() in ' \t\r':
+            self.advance()
     
     def skip_comment(self):
-        if self.peek() == '#':
-            while self.pos < self.len and self.text[self.pos] != '\n':
-                self.pos += 1
+        if self.current_char() == '#':
+            while self.current_char() is not None and self.current_char() != '\n':
+                self.advance()
     
     def read_number(self) -> Token:
-        start = self.pos
+        start_line, start_col = self.line, self.col
+        digits = []
         has_dot = False
-        while self.pos < self.len:
-            ch = self.text[self.pos]
-            if ch.isdigit():
-                self.pos += 1
-            elif ch == '.' and not has_dot:
+        
+        while self.current_char() is not None and (self.current_char().isdigit() or self.current_char() == '.'):
+            if self.current_char() == '.':
+                if has_dot:
+                    break  # ikinci nokta - sayı biter
                 has_dot = True
-                self.pos += 1
-            else:
-                break
-        value = self.text[start:self.pos]
+            digits.append(self.current_char())
+            self.advance()
+        
+        value = ''.join(digits)
         if has_dot:
-            return Token('NUMBER', float(value), start)
-        return Token('NUMBER', int(value), start)
+            return Token('NUMBER', value, start_line, start_col)
+        return Token('NUMBER', value, start_line, start_col)
     
     def read_identifier(self) -> Token:
-        start = self.pos
-        while self.pos < self.len:
-            ch = self.text[self.pos]
-            if ch.isalnum() or ch == '_':
-                self.pos += 1
-            else:
-                break
-        value = self.text[start:self.pos]
-        if value in ('min', 'max', 'abs'):
-            return Token('FUNCTION', value, start)
-        return Token('IDENTIFIER', value, start)
+        start_line, start_col = self.line, self.col
+        chars = []
+        
+        while self.current_char() is not None and (self.current_char().isalnum() or self.current_char() == '_'):
+            chars.append(self.current_char())
+            self.advance()
+        
+        value = ''.join(chars)
+        return Token('IDENTIFIER', value, start_line, start_col)
     
-    def next_token(self) -> Optional[Token]:
-        self.skip_whitespace()
-        self.skip_comment()
-        self.skip_whitespace()
+    def read_operator(self) -> Token:
+        start_line, start_col = self.line, self.col
+        ch = self.current_char()
         
-        if self.pos >= self.len:
-            return None
-        
-        ch = self.peek()
-        
-        if ch == '\n' or ch == ';':
+        # İki karakterli operatörler: **
+        if ch == '*' and self.pos + 1 < len(self.text) and self.text[self.pos + 1] == '*':
             self.advance()
-            return Token('SEPARATOR', ch, self.pos - 1)
-        
-        if ch.isdigit():
-            return self.read_number()
-        
-        if ch.isalpha() or ch == '_':
-            return self.read_identifier()
-        
-        if ch == '=':
             self.advance()
-            return Token('ASSIGN', '=', self.pos - 1)
+            return Token('OPERATOR', '**', start_line, start_col)
         
-        if ch == '(':
+        # Tek karakterli operatörler ve noktalama
+        single_chars = '+-*/%=;(),'
+        if ch in single_chars:
             self.advance()
-            return Token('LPAREN', '(', self.pos - 1)
+            if ch == ';':
+                return Token('SEMICOLON', ';', start_line, start_col)
+            elif ch == '(':
+                return Token('LPAREN', '(', start_line, start_col)
+            elif ch == ')':
+                return Token('RPAREN', ')', start_line, start_col)
+            elif ch == ',':
+                return Token('COMMA', ',', start_line, start_col)
+            elif ch == '=':
+                return Token('ASSIGN', '=', start_line, start_col)
+            else:
+                return Token('OPERATOR', ch, start_line, start_col)
         
-        if ch == ')':
-            self.advance()
-            return Token('RPAREN', ')', self.pos - 1)
-        
-        if ch == ',':
-            self.advance()
-            return Token('COMMA', ',', self.pos - 1)
-        
-        if ch == '*':
-            self.advance()
-            if self.peek() == '*':
-                self.advance()
-                return Token('POWER', '**', self.pos - 2)
-            return Token('MUL', '*', self.pos - 1)
-        
-        if ch == '/':
-            self.advance()
-            return Token('DIV', '/', self.pos - 1)
-        
-        if ch == '%':
-            self.advance()
-            return Token('MOD', '%', self.pos - 1)
-        
-        if ch == '+':
-            self.advance()
-            return Token('PLUS', '+', self.pos - 1)
-        
-        if ch == '-':
-            self.advance()
-            return Token('MINUS', '-', self.pos - 1)
-        
+        # Bilinmeyen karakter
         self.advance()
-        raise SyntaxError(f'Bilinmeyen karakter: {ch!r}')
+        raise SyntaxError(f"Bilinmeyen karakter: {ch!r} (satır {start_line}, sütun {start_col})")
     
     def tokenize(self) -> List[Token]:
-        tokens = []
-        while True:
-            tok = self.next_token()
-            if tok is None:
+        while self.current_char() is not None:
+            self.skip_whitespace()
+            self.skip_comment()
+            self.skip_whitespace()  # yorumdan sonra tekrar boşluk atla
+            
+            ch = self.current_char()
+            if ch is None:
                 break
-            tokens.append(tok)
-        tokens.append(Token('EOF', '', self.pos))
-        return tokens
+            
+            # Yeni satır token'ı oluştur
+            if ch == '\n':
+                self.tokens.append(Token('NEWLINE', '\n', self.line, self.col))
+                self.advance()
+                continue
+            
+            if ch.isdigit() or (ch == '.' and self.pos + 1 < len(self.text) and self.text[self.pos + 1].isdigit()):
+                self.tokens.append(self.read_number())
+            elif ch.isalpha() or ch == '_':
+                self.tokens.append(self.read_identifier())
+            else:
+                self.tokens.append(self.read_operator())
+        
+        self.tokens.append(Token('EOF', '', self.line, self.col))
+        return self.tokens
+
+    def skip_comment(self):
+        if self.current_char() == '#':
+            while self.current_char() is not None and self.current_char() != '\n':
+                self.advance()
+            # newline'ı atla (tokenize loop'unda yakalanacak)
+            if self.current_char() == '\n':
+                self.advance()
+
+    def skip_whitespace(self):
+        while self.current_char() is not None and self.current_char() in ' \t\r':
+            self.advance()
 
 
 class Parser:
     """Recursive descent parser with precedence climbing."""
-    
     def __init__(self, tokens: List[Token]):
         self.tokens = tokens
         self.pos = 0
-        self.current = tokens[0] if tokens else None
     
-    def advance(self):
+    def current(self) -> Token:
+        return self.tokens[self.pos]
+    
+    def advance(self) -> Token:
+        tok = self.tokens[self.pos]
         self.pos += 1
-        if self.pos < len(self.tokens):
-            self.current = self.tokens[self.pos]
-        else:
-            self.current = None
+        return tok
     
-    def expect(self, type_: str) -> Token:
-        if self.current and self.current.type == type_:
-            tok = self.current
+    def expect(self, type_: str, value: str = None) -> Token:
+        tok = self.current()
+        if tok.type != type_ or (value is not None and tok.value != value):
+            expected = f"{type_}({value!r})" if value else type_
+            raise SyntaxError(f"Beklenen {expected}, ama {tok.type}({tok.value!r}) bulundu (satır {tok.line}, sütun {tok.col})")
+        return self.advance()
+    
+    def match(self, type_: str, value: str = None) -> bool:
+        tok = self.current()
+        if tok.type == type_ and (value is None or tok.value == value):
             self.advance()
-            return tok
-        raise SyntaxError(f'Beklenen {type_}, bulundu {self.current}')
+            return True
+        return False
     
-    def match(self, *types: str) -> bool:
-        return self.current is not None and self.current.type in types
-    
-    def parse(self):
-        statements = []
-        while self.current and self.current.type != 'EOF':
-            if self.current.type == 'SEPARATOR':
-                self.advance()
+    def parse(self) -> List['Expr']:
+        """Programı bir ifade listesi olarak parse et."""
+        exprs = []
+        while self.current().type != 'EOF':
+            # Boş satırları atla
+            while self.match('NEWLINE'):
+                pass
+            
+            if self.current().type == 'EOF':
+                break
+            
+            expr = self.parse_assignment()
+            exprs.append(expr)
+            
+            # Statement separator: ; veya NEWLINE
+            if self.match('SEMICOLON'):
                 continue
-            stmt = self.parse_statement()
-            statements.append(stmt)
-            while self.current and self.current.type == 'SEPARATOR':
-                self.advance()
-        return statements
+            if self.match('NEWLINE'):
+                continue
+            
+            # Eğer EOF değilse ve separator da yoksa, hata
+            if self.current().type != 'EOF':
+                next_tok = self.current()
+                if next_tok.type in ('NUMBER', 'IDENTIFIER') or \
+                   (next_tok.type == 'OPERATOR' and next_tok.value in ('+', '-')) or \
+                   (next_tok.type == 'LPAREN'):
+                    raise SyntaxError(f"İfadeler arasına ';' veya yeni satır konulmalı (satır {next_tok.line}, sütun {next_tok.col})")
+        return exprs
     
-    def parse_statement(self):
-        if self.current and self.current.type == 'IDENTIFIER':
-            saved_pos = self.pos
-            name_tok = self.current
-            self.advance()
-            if self.current and self.current.type == 'ASSIGN':
-                self.advance()
-                expr = self.parse_expression()
-                return ('assign', name_tok.value, expr)
-            self.pos = saved_pos
-            self.current = self.tokens[self.pos]
+    def parse_assignment(self) -> 'Expr':
+        """Assignment: identifier '=' assignment | additive"""
+        # Lookahead: eğer identifier varsa ve sonrası '=' ise assignment
+        tok = self.current()
+        if tok.type == 'IDENTIFIER':
+            # Peek next token
+            if self.pos + 1 < len(self.tokens) and self.tokens[self.pos + 1].type == 'ASSIGN':
+                name_tok = self.advance()  # identifier
+                self.expect('ASSIGN')
+                value_expr = self.parse_assignment()  # sağdan birleşimli
+                return AssignExpr(name_tok.value, value_expr, name_tok.line, name_tok.col)
         
-        expr = self.parse_expression()
-        return ('expr', expr)
+        return self.parse_additive()
     
-    def parse_expression(self):
-        left = self.parse_term()
-        while self.match('PLUS', 'MINUS'):
-            op = self.current.type
-            self.advance()
-            right = self.parse_term()
-            left = ('binop', op, left, right)
+    def parse_additive(self) -> 'Expr':
+        """additive: multiplicative (('+' | '-') multiplicative)*"""
+        left = self.parse_multiplicative()
+        
+        while self.match('OPERATOR', '+') or self.match('OPERATOR', '-'):
+            op = self.tokens[self.pos - 1].value
+            right = self.parse_multiplicative()
+            left = BinaryExpr(left, op, right)
+        
         return left
     
-    def parse_term(self):
+    def parse_multiplicative(self) -> 'Expr':
+        """multiplicative: unary (('*' | '/' | '%') unary)*"""
         left = self.parse_unary()
-        while self.match('MUL', 'DIV', 'MOD'):
-            op = self.current.type
-            self.advance()
+        
+        while self.match('OPERATOR', '*') or self.match('OPERATOR', '/') or self.match('OPERATOR', '%'):
+            op = self.tokens[self.pos - 1].value
             right = self.parse_unary()
-            left = ('binop', op, left, right)
+            left = BinaryExpr(left, op, right)
+        
         return left
     
-    def parse_unary(self):
-        if self.match('PLUS', 'MINUS'):
-            op = self.current.type
-            self.advance()
+    def parse_unary(self) -> 'Expr':
+        """unary: ('+' | '-') unary | power"""
+        if self.match('OPERATOR', '+') or self.match('OPERATOR', '-'):
+            op = self.tokens[self.pos - 1].value
             operand = self.parse_unary()
-            return ('unary', op, operand)
+            return UnaryExpr(op, operand)
+        
         return self.parse_power()
     
-    def parse_power(self):
+    def parse_power(self) -> 'Expr':
+        """power: primary ('**' power)?  (sağdan birleşimli)"""
         left = self.parse_primary()
-        if self.match('POWER'):
-            self.advance()
-            right = self.parse_unary()  # Sağ taraf unary olabilir (2 ** -1)
-            left = ('binop', 'POWER', left, right)
+        
+        if self.match('OPERATOR', '**'):
+            right = self.parse_unary()  # ** sonrası unary parse et (sağdan birleşimli için)
+            left = BinaryExpr(left, '**', right)
+        
         return left
     
-    def parse_primary(self):
-        if not self.current:
-            raise SyntaxError('Beklenmeyen program sonu')
-        
-        tok = self.current
+    def parse_primary(self) -> 'Expr':
+        """primary: NUMBER | IDENTIFIER | '(' expression ')' | function_call"""
+        tok = self.current()
         
         if tok.type == 'NUMBER':
             self.advance()
-            return ('number', tok.value)
+            # Sayıyı int veya float olarak parse et
+            if '.' in tok.value:
+                return NumberExpr(float(tok.value), tok.line, tok.col)
+            else:
+                return NumberExpr(int(tok.value), tok.line, tok.col)
         
         if tok.type == 'IDENTIFIER':
+            name = tok.value
             self.advance()
-            # Fonksiyon çağrısı mı kontrol et
-            if self.current and self.current.type == 'LPAREN':
-                func_name = tok.value
-                self.advance()  # '('
+            
+            # Fonksiyon çağrısı mı?
+            if self.match('LPAREN'):
                 args = []
                 if not self.match('RPAREN'):
-                    args.append(self.parse_expression())
+                    args.append(self.parse_assignment())  # argumanlar assignment da olabilir? Hayır, expression olmalı.
+                    # Düzeltme: argumanlar expression (assignment değil)
+                    # Ama parse_assignment da additive'e düşer, bu da expression'dır.
                     while self.match('COMMA'):
-                        self.advance()
-                        args.append(self.parse_expression())
-                self.expect('RPAREN')
-                return ('call', func_name, args)
-            return ('var', tok.value)
-        
-        if tok.type == 'FUNCTION':
-            func_name = tok.value
-            self.advance()
-            self.expect('LPAREN')
-            args = []
-            if not self.match('RPAREN'):
-                args.append(self.parse_expression())
-                while self.match('COMMA'):
-                    self.advance()
-                    args.append(self.parse_expression())
-            self.expect('RPAREN')
-            return ('call', func_name, args)
+                        args.append(self.parse_assignment())
+                    self.expect('RPAREN')
+                return CallExpr(name, args, tok.line, tok.col)
+            else:
+                return VariableExpr(name, tok.line, tok.col)
         
         if tok.type == 'LPAREN':
             self.advance()
-            expr = self.parse_expression()
+            expr = self.parse_assignment()
             self.expect('RPAREN')
             return expr
         
-        raise SyntaxError(f'Geçersiz sözdizimi: {tok}')
+        raise SyntaxError(f"Beklenmeyen token: {tok.type}({tok.value!r}) (satır {tok.line}, sütun {tok.col})")
+
+
+# AST Düğümleri
+class Expr:
+    pass
+
+class NumberExpr(Expr):
+    def __init__(self, value: Union[int, float], line: int, col: int):
+        self.value = value
+        self.line = line
+        self.col = col
+
+class VariableExpr(Expr):
+    def __init__(self, name: str, line: int, col: int):
+        self.name = name
+        self.line = line
+        self.col = col
+
+class AssignExpr(Expr):
+    def __init__(self, name: str, value: Expr, line: int, col: int):
+        self.name = name
+        self.value = value
+        self.line = line
+        self.col = col
+
+class BinaryExpr(Expr):
+    def __init__(self, left: Expr, op: str, right: Expr):
+        self.left = left
+        self.op = op
+        self.right = right
+
+class UnaryExpr(Expr):
+    def __init__(self, op: str, operand: Expr):
+        self.op = op
+        self.operand = operand
+
+class CallExpr(Expr):
+    def __init__(self, name: str, args: List[Expr], line: int, col: int):
+        self.name = name
+        self.args = args
+        self.line = line
+        self.col = col
 
 
 class Interpreter:
-    """AST'yi yorumlar ve değerlendirir."""
-    
+    """AST'yi değerlendirir."""
     def __init__(self):
-        self.variables = {}
+        self.variables: dict = {}
     
-    def eval(self, node):
-        if node is None:
-            return None
+    def evaluate(self, expr: Expr) -> Union[int, float, None]:
+        if isinstance(expr, NumberExpr):
+            return expr.value
         
-        ntype = node[0]
+        if isinstance(expr, VariableExpr):
+            if expr.name not in self.variables:
+                raise NameError(f"Tanımsız değişken: {expr.name}")
+            return self.variables[expr.name]
         
-        if ntype == 'number':
-            return node[1]
+        if isinstance(expr, AssignExpr):
+            value = self.evaluate(expr.value)
+            self.variables[expr.name] = value
+            return value
         
-        if ntype == 'var':
-            name = node[1]
-            if name not in self.variables:
-                raise NameError(f"Tanımsız değişken: '{name}'")
-            return self.variables[name]
+        if isinstance(expr, BinaryExpr):
+            left_val = self.evaluate(expr.left)
+            right_val = self.evaluate(expr.right)
+            return self.eval_binary(expr.op, left_val, right_val)
         
-        if ntype == 'unary':
-            op = node[1]
-            val = self.eval(node[2])
-            if op == 'PLUS':
-                return +val
-            elif op == 'MINUS':
-                return -val
+        if isinstance(expr, UnaryExpr):
+            operand_val = self.evaluate(expr.operand)
+            return self.eval_unary(expr.op, operand_val)
         
-        if ntype == 'binop':
-            op = node[1]
-            left = self.eval(node[2])
-            right = self.eval(node[3])
-            
-            if op == 'PLUS':
-                return left + right
-            elif op == 'MINUS':
-                return left - right
-            elif op == 'MUL':
-                return left * right
-            elif op == 'DIV':
-                if right == 0:
-                    raise ZeroDivisionError('Sıfıra bölme')
-                return left / right
-            elif op == 'MOD':
-                if right == 0:
-                    raise ZeroDivisionError('Sıfıra bölme')
-                return left % right
-            elif op == 'POWER':
-                return left ** right
+        if isinstance(expr, CallExpr):
+            return self.eval_call(expr.name, [self.evaluate(arg) for arg in expr.args])
         
-        if ntype == 'call':
-            func_name = node[1]
-            args = [self.eval(arg) for arg in node[2]]
-            
-            if func_name == 'abs':
-                if len(args) != 1:
-                    raise TypeError(f'abs() 1 argüman bekler, {len(args)} verildi')
-                return abs(args[0])
-            elif func_name == 'min':
-                if len(args) < 1:
-                    raise TypeError('min() en az 1 argüman bekler')
-                return min(args)
-            elif func_name == 'max':
-                if len(args) < 1:
-                    raise TypeError('max() en az 1 argüman bekler')
-                return max(args)
-            else:
-                raise NameError(f"Bilinmeyen fonksiyon: '{func_name}'")
-        
-        raise ValueError(f'Bilinmeyen node tipi: {ntype}')
+        raise RuntimeError(f"Bilinmeyen expression türü: {type(expr)}")
     
-    def execute(self, statements):
-        last_value = None
-        for stmt in statements:
-            if stmt[0] == 'assign':
-                _, name, expr = stmt
-                value = self.eval(expr)
-                self.variables[name] = value
-                last_value = value
-            elif stmt[0] == 'expr':
-                _, expr = stmt
-                last_value = self.eval(expr)
-        return last_value
+    def eval_binary(self, op: str, left: Union[int, float], right: Union[int, float]) -> Union[int, float]:
+        if op == '+':
+            return left + right
+        if op == '-':
+            return left - right
+        if op == '*':
+            return left * right
+        if op == '/':
+            if right == 0:
+                raise ZeroDivisionError("Sıfıra bölme hatası")
+            return left / right  # Python'da her zaman float
+        if op == '%':
+            if right == 0:
+                raise ZeroDivisionError("Sıfıra bölme hatası (modulo)")
+            return left % right
+        if op == '**':
+            return left ** right
+        raise RuntimeError(f"Bilinmeyen binary operatör: {op}")
+    
+    def eval_unary(self, op: str, operand: Union[int, float]) -> Union[int, float]:
+        if op == '+':
+            return +operand
+        if op == '-':
+            return -operand
+        raise RuntimeError(f"Bilinmeyen unary operatör: {op}")
+    
+    def eval_call(self, name: str, args: List[Union[int, float]]) -> Union[int, float]:
+        if name == 'min':
+            if not args:
+                raise TypeError("min() en az 1 argüman bekler")
+            return min(args)
+        if name == 'max':
+            if not args:
+                raise TypeError("max() en az 1 argüman bekler")
+            return max(args)
+        if name == 'abs':
+            if len(args) != 1:
+                raise TypeError(f"abs() tam 1 argüman bekler, {len(args)} verildi")
+            return abs(args[0])
+        
+        raise NameError(f"Bilinmeyen fonksiyon: {name}")
 
 
-def calistir(program: str):
+def calistir(program: str) -> Union[int, float, None]:
     """
-    Hesap dilinde yazılmış programı çalıştırır ve son ifadenin değerini döndürür.
+    Hesap dili programını çalıştırır ve son ifadenin değerini döndürür.
     
     Args:
-        program: Hesap dili kaynak kodu (string)
+        program: Hesap dili kaynak kodu
     
     Returns:
-        Son ifadenin değeri (int, float) veya None (hiç ifade yoksa)
+        Son ifadenin değeri (int, float) veya hiç ifade yoksa None
     
     Raises:
-        SyntaxError: Sözdizimi hatası durumunda
-        NameError: Tanımsız değişken/fonksiyon durumunda
-        ZeroDivisionError: Sıfıra bölme durumunda
+        NameError: Tanımsız değişken veya fonksiyon
+        ZeroDivisionError: Sıfıra bölme
+        SyntaxError: Söz dizimi hatası
     """
     if not program or not program.strip():
         return None
     
-    lexer = Lexer(program)
-    tokens = lexer.tokenize()
+    tokenizer = Tokenizer(program)
+    tokens = tokenizer.tokenize()
     
     parser = Parser(tokens)
-    statements = parser.parse()
+    exprs = parser.parse()
     
-    if not statements:
+    if not exprs:
         return None
     
     interpreter = Interpreter()
-    return interpreter.execute(statements)
+    result = None
+    for expr in exprs:
+        result = interpreter.evaluate(expr)
+    
+    return result
 
 
-if __name__ == '__main__':
+# Test için main bloğu
+if __name__ == "__main__":
     test_cases = [
+        ("2 + 3", 5),
+        ("2 * 3 + 4", 10),
         ("2 + 3 * 4", 14),
         ("(2 + 3) * 4", 20),
-        ("x = 5; x * 2", 10),
-        ("-2 ** 2", -4),
+        ("2 ** 3 ** 2", 512),  # sağdan birleşimli: 2 ** (3 ** 2) = 2 ** 9 = 512
+        ("-2 ** 2", -4),  # -(2 ** 2) = -4
         ("2 ** -1", 0.5),
-        ("2 ** 3 ** 2", 512),
-        ("min(5, 3, 8)", 3),
-        ("max(5, 3, 8)", 8),
-        ("abs(-10)", 10),
+        ("x = 5", 5),
+        ("x = 5; x + 3", 8),
+        ("x = 2; y = 3; x * y", 6),
+        ("min(3, 1, 4)", 1),
+        ("max(3, 1, 4)", 4),
+        ("abs(-5)", 5),
+        ("3.5 + 2.1", 5.6),
         ("10 / 3", 10/3),
         ("10 % 3", 1),
         ("# yorum\n42", 42),
         ("", None),
         ("   ", None),
+        ("x = 1; y = 2; x + y", 3),
+        ("a = b = 3", 3),  # zincirli atama
+        ("min(5, max(2, 3))", 3),
     ]
     
-    for code, expected in test_cases:
+    print("Testler başlıyor...")
+    for i, (code, expected) in enumerate(test_cases):
         try:
             result = calistir(code)
-            status = "OK" if result == expected else "FAIL"
-            print(f'{status}: {code!r} => {result} (beklenen: {expected})')
+            if result == expected:
+                print(f"✓ Test {i+1}: {code!r} => {result}")
+            else:
+                print(f"✗ Test {i+1}: {code!r} => {result} (beklenen: {expected})")
         except Exception as e:
-            print(f'ERROR: {code!r} => {type(e).__name__}: {e}')
+            print(f"✗ Test {i+1}: {code!r} => HATA: {type(e).__name__}: {e}")
     
+    # Hata testleri
+    print("\nHata testleri:")
     error_cases = [
-        ("x + 1", NameError),
+        ("x + 1", NameError),  # tanımsız değişken
+        ("foo()", NameError),  # bilinmeyen fonksiyon
         ("1 / 0", ZeroDivisionError),
+        ("1 % 0", ZeroDivisionError),
         ("2 +", SyntaxError),
         ("(1", SyntaxError),
         ("3 4", SyntaxError),
         ("2 $ 3", SyntaxError),
-        ("foo()", NameError),
     ]
     
     for code, expected_error in error_cases:
         try:
-            result = calistir(code)
-            print(f'FAIL (beklenen hata): {code!r} => {result}')
+            calistir(code)
+            print(f"✗ Hata testi: {code!r} => Hata bekleniyordu ({expected_error.__name__})")
+        except expected_error:
+            print(f"✓ Hata testi: {code!r} => {expected_error.__name__} (beklendiği gibi)")
         except Exception as e:
-            status = "OK" if isinstance(e, expected_error) else "FAIL"
-            print(f'{status}: {code!r} => {type(e).__name__}: {e}')
+            print(f"✗ Hata testi: {code!r} => Yanlış hata: {type(e).__name__}: {e}")

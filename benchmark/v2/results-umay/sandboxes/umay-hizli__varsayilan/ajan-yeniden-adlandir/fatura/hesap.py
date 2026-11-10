@@ -1,6 +1,5 @@
 """KDV hesapları."""
 
-
 import warnings
 
 
@@ -10,9 +9,9 @@ def kdv_hesapla(tutar, oran=0.20):
 
 
 def hesapKdv(tutar, oran=0.20):
-    """Eski isim: kdv_hesapla'yı çağırır ve kullanımdan kaldırıldığını belirtir."""
+    """Eski isim; kdv_hesapla'ya yönlendirir."""
     warnings.warn(
-        "hesapKdv kullanımdan kaldırıldı; kdv_hesapla'yı kullanın",
+        "hesapKdv is deprecated, use kdv_hesapla",
         DeprecationWarning,
         stacklevel=2,
     )

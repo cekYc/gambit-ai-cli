@@ -1,89 +1,91 @@
 def parse_csv(text: str, delimiter: str = ",") -> list[list[str]]:
+    """
+    Parse CSV text without using the csv module.
+    
+    Args:
+        text: CSV formatted text
+        delimiter: Field delimiter (default ",")
+    
+    Returns:
+        List of records, each record is a list of fields
+    
+    Raises:
+        ValueError: For malformed CSV input
+    """
     if not text:
         return []
-    text = text.replace("\r\n", "\n")
+    
+    # Normalize line endings to \n only
+    text = text.replace('\r\n', '\n')
+    
     records = []
-    current_record = []
-    current_field = []
+    fields = []
+    field_chars = []
     in_quotes = False
     i = 0
     n = len(text)
+    
     while i < n:
         ch = text[i]
+        
         if in_quotes:
-            if ch == "\"":
-                if i + 1 < n and text[i + 1] == "\"":
-                    current_field.append("\"")
+            if ch == '"':
+                if i + 1 < n and text[i + 1] == '"':
+                    # Escaped quote
+                    field_chars.append('"')
                     i += 2
-                    continue
                 else:
+                    # Closing quote
                     in_quotes = False
                     i += 1
+                    # After closing quote, next char must be delimiter, newline, or end
                     if i < n:
                         next_ch = text[i]
-                        if next_ch != delimiter and next_ch != "\n":
-                            raise ValueError(f"Invalid character after closing quote at position {i}: {next_ch}")
-                    continue
-            else:
-                current_field.append(ch)
+                        if next_ch != delimiter and next_ch != '\n':
+                            raise ValueError(f"Invalid character after closing quote at position {i}")
+            elif ch == '\n':
+                # Newline inside quoted field
+                field_chars.append('\n')
                 i += 1
-                continue
+            else:
+                field_chars.append(ch)
+                i += 1
         else:
-            if ch == "\"":
-                if current_field:
-                    raise ValueError(f"Quote not at start of field at position {i}")
-                in_quotes = True
-                i += 1
-                continue
+            # Not in quotes
+            if ch == '"':
+                # Start of quoted field - only valid at field start
+                if field_chars:
+                    # Quote in middle of unquoted field - treat as literal
+                    field_chars.append(ch)
+                    i += 1
+                else:
+                    in_quotes = True
+                    i += 1
             elif ch == delimiter:
-                current_record.append("".join(current_field))
-                current_field = []
+                # Field separator
+                fields.append(''.join(field_chars))
+                field_chars = []
                 i += 1
-                continue
-            elif ch == "\n":
-                current_record.append("".join(current_field))
-                records.append(current_record)
-                current_record = []
-                current_field = []
+            elif ch == '\n':
+                # End of record
+                fields.append(''.join(field_chars))
+                field_chars = []
+                records.append(fields)
+                fields = []
                 i += 1
-                continue
             else:
-                current_field.append(ch)
+                field_chars.append(ch)
                 i += 1
-                continue
-    if current_field or current_record or (records and text.endswith("\n")):
-        if not text.endswith("\n"):
-            current_record.append("".join(current_field))
-            records.append(current_record)
+    
+    # End of text
     if in_quotes:
-        raise ValueError("Unclosed quote at end of input")
+        raise ValueError("Unclosed quoted field")
+    
+    # Add the last field and record if there's content
+    # But don't add empty record if text ended with newline
+    if field_chars or fields or (n > 0 and text[-1] != '\n'):
+        fields.append(''.join(field_chars))
+        if fields:
+            records.append(fields)
+    
     return records
-
-if __name__ == "__main__":
-    test_cases = [
-        ("", []),
-        ("a,b,c", [["a", "b", "c"]]),
-        ("a,b\nc,d", [["a", "b"], ["c", "d"]]),
-        ("\"hello\",world", [["hello", "world"]]),
-        ("\"hello\"\"world\",foo", [["hello\"world", "foo"]]),
-        ("a,\"b\nc\",d", [["a", "b\nc", "d"]]),
-        ("a,b\n", [["a", "b"]]),
-        ("a,b\n\nc,d", [["a", "b"], [""], ["c", "d"]]),
-        ("\n", [[""]]),
-        ("a,\"b\"c", None),
-        ("\"unclosed", None),
-    ]
-    for i, (inp, expected) in enumerate(test_cases):
-        try:
-            result = parse_csv(inp)
-            if expected is None:
-                print(f"Test {i}: FAIL - expected ValueError but got {result}")
-            elif result == expected:
-                print(f"Test {i}: PASS")
-            else:
-                print(f"Test {i}: FAIL - got {result}, expected {expected}")
-        except ValueError as e:
-            if expected is None:
-                print(f"Test {i}: PASS - ValueError raised: {e}")
-            else:
-                print(f"Test {i}: FAIL - unexpected ValueError: {e}")

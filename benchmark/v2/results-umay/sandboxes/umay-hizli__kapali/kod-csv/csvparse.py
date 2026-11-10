@@ -1,123 +1,122 @@
-import re
+"""CSV ayrıştırıcı.
+
+Standart kütüphane `csv` modülünü kullanmadan, satır sonu (\n veya \r\n)
+ve birim ayırıcı (delimiter, varsayılan virgül) bazlı CSV metnini ayrıştırır.
+"""
+
+from typing import List
 
 
-def parse_csv(text: str, delimiter: str = ",") -> list[list[str]]:
-    """CSV metnini çözümle ve satır/alan listesini döndür.
+def parse_csv(text: str, delimiter: str = ",") -> List[List[str]]:
+    """CSV metnini satır ve alanlara ayırır.
 
-    Kural kısamı:
-    - Kayıtlar '\n' veya '\r\n' ile ayrılır. Sonda tek satır sonu yeni kayıt oluşturmaz.
-    - Boş metin [] döndürür. Ortadaki boş satır tek boş alanlı kayıttır: [''].
-    - Çift tırnaklı alan: ayırıcı, satır sonu ve '' (tek " olarak) içerebilir;
-      tırnaklar alana dahil değildir.
-    - Tırnaksız alan olduğu gibi alınır (boşluklar korunur); ortadaki " sıradan karakterdir.
-    - Hatalı girdide ValueError fırlatır: kapanan tırnaktan hemen sonra ayırıcı/satır sonu
-      dışında bir karakter (ör. "ab"c) ya da hiç kapanmayan tırnak.
+    Args:
+        text: Ayrıştırılacak CSV metni.
+        delimiter: Alan ayırıcı karakteri (varsayılan ",").
+
+    Returns:
+        Her kayıt bir liste olan kayıt listesidir.
+
+    Raises:
+        ValueError: Çift tırnakla başlayan alan hatalıysa (kapalı olmayan
+            tırnak veya kapanıştan hemen sonra ayırıcı/satır sonu dışında bir
+            karakter varsa).
     """
+
     if text == "":
         return []
 
-    # Satır sonlarını normalize et: \r\n -> \n, tek başına \r -> \n
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-
-    # Sondaki tek bir satır sonu yeni kayıt oluşturmaz.
-    if text.endswith("\n"):
-        text = text[:-1]
-
-    # Tamamen boşsa (sadece satır sonundan ibaretse) boş döndür.
-    if text == "":
-        return []
-
-    lines = text.split("\n")
-    records: list[list[str]] = []
-    line_index = 0
-
-    while line_index < len(lines):
-        line = lines[line_index]
-        record, line_index = _parse_line_multi(line, delimiter, lines, line_index)
-        records.append(record)
-
-    return records
-
-
-def _parse_line_multi(line: str, delimiter: str, lines: list[str], line_index: int) -> tuple[list[str], int]:
-    """Tek bir CSV satırını alanlara ayır; tırnak içi alan birden fazla satıra yayabilir."""
-    fields: list[str] = []
+    records: List[List[str]] = []
+    record: List[str] = []
+    n = len(text)
     i = 0
-    n = len(line)
 
-    while i <= n:
-        if i == n:
-            # Satır sonuna ulaşıldı (tırnak içi alanın içinde olabilir).
-            break
-        if line[i] == '"':
-            field, i, line_index = _parse_quoted_field_multi(line, i, n, delimiter, lines, line_index)
-        else:
-            field, i = _parse_unquoted_field(line, i, n, delimiter)
+    def read_unquoted_field() -> str:
+        nonlocal i
+        start = i
+        while i < n and text[i] not in (delimiter, "\r", "\n"):
+            i += 1
+        return text[start:i]
 
-        fields.append(field)
-
-        if i < n:
-            if line[i] == delimiter:
-                i += 1  # ayırıcıyı atla ve bir sonraki alana geç
-                continue
-            else:
-                # Satır sonuna gelinmediyse ama beklenmeyen karakter varsa hata.
-                raise ValueError("Geçersiz CSV satırı: beklenmeyen karakter")
-
-    # Tamamen boş satır: tek boş alanlı kayıttır.
-    if not fields:
-        fields.append("")
-
-    return fields, line_index + 1
-
-
-def _parse_quoted_field_multi(line: str, i: int, n: int, delimiter: str, lines: list[str], line_index: int) -> tuple[str, int, int]:
-    # i, başlangıç tırnağının işaretinde.
-    i += 1  # açılış tırnağını atla
-    chars: list[str] = []
-    current_line_index = line_index
-
-    while True:
-        current_line = lines[current_line_index]
-        while i < len(current_line):
-            c = current_line[i]
-            if c == '"':
-                # İkinci tırnak: kaçış ('') veya kapanış.
-                if i + 1 < len(current_line) and current_line[i + 1] == '"':
+    def read_quoted_field() -> str:
+        nonlocal i
+        # text[i] == '"'
+        i += 1  # açılış tırnaktan geç
+        chars: List[str] = []
+        while i < n:
+            ch = text[i]
+            if ch == '"':
+                if i + 1 < n and text[i + 1] == '"':
                     chars.append('"')
                     i += 2
                 else:
-                    # Kapanış tırnağı bulundu.
-                    i += 1
-                    # Kapanan tırnaktan hemen sonra sadece ayırıcı veya satır sonu olabilir.
-                    if i < len(current_line) and current_line[i] != delimiter:
-                        raise ValueError(f"Kapanan tırnaktan sonra geçersiz karakter: {current_line[i]!r}")
-                    return "".join(chars), i, current_line_index
+                    i += 1  # kapanış tırnak
+                    if i < n and text[i] in (delimiter, "\r", "\n"):
+                        return "".join(chars)
+                    raise ValueError(
+                        "Çift tırnakla başlayan alanda kapanıştan sonra "
+                        "geçersiz karakter."
+                    )
             else:
-                chars.append(c)
+                chars.append(ch)
                 i += 1
+        raise ValueError("Çift tırnakla başlayan alan kapanmadı.")
 
-        # Satır sonuna ulaşıldı ve tırnak henüz kapanmadı.
-        # Bu satır sonu alanın parçasıdır (eğer sonraki satır varsa).
-        if current_line_index + 1 < len(lines):
-            chars.append("\n")
-            current_line_index += 1
-            i = 0
-        else:
-            raise ValueError("Kapanmayan tırnak")
+    def finish_record() -> None:
+        nonlocal record
+        if record:
+            records.append(record)
+            record = []
 
-
-def _parse_unquoted_field(line: str, i: int, n: int, delimiter: str) -> tuple[str, int]:
-    chars: list[str] = []
     while i < n:
-        c = line[i]
-        if c == delimiter:
+        ch = text[i]
+
+        if ch == '"':
+            record.append(read_quoted_field())
+            if i >= n:
+                break
+            if text[i] == delimiter:
+                i += 1
+                continue
+            if text[i] in ("\r", "\n"):
+                finish_record()
+                continue
+            raise ValueError(
+                "Çift tırnakla başlayan alanda kapanıştan sonra "
+                "geçersiz karakter."
+            )
+
+        if ch == delimiter:
+            record.append("")
+            i += 1
+            continue
+
+        if ch == "\r":
+            if i + 1 < n and text[i + 1] == "\n":
+                i += 2
+            else:
+                i += 1
+            finish_record()
+            continue
+
+        if ch == "\n":
+            i += 1
+            finish_record()
+            continue
+
+        # Tırnaksız alan.
+        record.append(read_unquoted_field())
+        if i >= n:
             break
-        if c == '"':
-            # Tırnaksız alanın ortasındaki " sıradan karakterdir.
-            chars.append(c)
+        if text[i] == delimiter:
             i += 1
-        else:
-            chars.append(c)
-            i += 1
-    return "".join(chars), i
+            continue
+        if text[i] in ("\r", "\n"):
+            # Satır sonu bir sonraki döngüde işlenir.
+            continue
+
+    # Metin sonu geldiğinde açık olan son alanı kaydet ve kayıtı bitir.
+    record.append("")
+    finish_record()
+
+    return records

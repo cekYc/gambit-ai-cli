@@ -13,7 +13,7 @@ async function siraylaIsle(ogeler, fn) {
 // Hepsi başarısız olursa SON hatayı fırlatır.
 async function tekrarDene(fn, deneme = 3) {
   let sonHata;
-  for (let i = 0; i < deneme; i++) {
+  for (let i = 0; i <= deneme; i++) {
     try {
       return await fn(i);
     } catch (e) {
@@ -33,7 +33,7 @@ function say(dizi) {
 // Sayıların ortalaması; boş dizide 0.
 function ortalama(dizi) {
   if (dizi.length === 0) return 0;
-  return dizi.reduce((a, b) => a + b, 0) / dizi.length;
+  return dizi.reduce((a, b) => a + b) / dizi.length;
 }
 
 // anahtarFn(oge) sonucuna göre gruplar: { anahtar: [ogeler...] }; öğelerin sırası korunur.

@@ -7,15 +7,15 @@
   "category": "Kod inceleme",
   "level": 3,
   "weight": 3.0,
-  "score": 0.744,
-  "detail": "1 yanlış alarm ×0.93 | eksik: satır 5: sinir_hatasi (0.60) [tür 'yanlis_kosul']; satır 25: yanlis_varsayilan",
+  "score": 0.7971,
+  "detail": "1 yanlış alarm ×0.93 | eksik: satır 25: yanlis_varsayilan",
   "notes": "",
   "items": [
    [
     "satır 5: sinir_hatasi",
     1,
-    0.6,
-    "tür 'yanlis_kosul'"
+    1.0,
+    ""
    ],
    [
     "satır 10: yanlis_kosul",
@@ -54,23 +54,24 @@
     ""
    ]
   ],
-  "wall": 23.0,
+  "wall": 28.8,
   "tokens": 0,
   "prompt_tokens": 0,
   "calls": 1,
   "think_calls": 1,
   "tool_calls": 0,
+  "empty_retries": 0,
   "timed_out": false,
   "server_error": "",
   "crash": "",
-  "time": "2026-11-08T10:17:59",
-  "time_limit": 300,
+  "time": "2026-11-10T01:08:56",
+  "time_limit": 7200,
   "seed": null,
   "sampling": "sunucu",
   "host": "umay-api",
   "agent": "umay-cli"
  },
- "final": "```json\n[\n  {\"satir\": 5, \"tur\": \"yanlis_kosul\"},\n  {\"satir\": 10, \"tur\": \"yanlis_kosul\"},\n  {\"satir\": 14, \"tur\": \"yan_etki\"},\n  {\"satir\": 19, \"tur\": \"async_hata\"},\n  {\"satir\": 27, \"tur\": \"yanlis_varsayilan\"},\n  {\"satir\": 32, \"tur\": \"kapsam_hatasi\"},\n  {\"satir\": 39, \"tur\": \"null_kontrolu\"}\n]\n```",
+ "final": "```json\n[\n  {\"satir\": 5, \"tur\": \"sinir_hatasi\"},\n  {\"satir\": 10, \"tur\": \"yanlis_kosul\"},\n  {\"satir\": 14, \"tur\": \"yan_etki\"},\n  {\"satir\": 19, \"tur\": \"async_hata\"},\n  {\"satir\": 27, \"tur\": \"yanlis_varsayilan\"},\n  {\"satir\": 33, \"tur\": \"kapsam_hatasi\"},\n  {\"satir\": 39, \"tur\": \"null_kontrolu\"}\n]\n```",
  "events": [],
  "messages": [
   {
@@ -78,11 +79,11 @@
    "content": [
     {
      "type": "reasoning",
-     "text": "The user wants me to analyze a JavaScript module and identify real bugs with line numbers and specific error types. Let me go through each function carefully.\n\n1. `sonNEleman(dizi, n)` - Line 3-7\n   - Line 5: `for (let i = dizi.length - n; i <= dizi.length; i++)`\n   - Problem: If n > dizi.length, `dizi.length - n` becomes negative, and the loop will access negative indices and also `dizi[dizi.length]` which is undefined (out of bounds). Also, it should be `i < dizi.length` not `<=`. This could cause undefined elements in result or crash if negative index behavior is unexpected. But the main issue is off-by-one and negative start index. This is a `yanlis_kosul` or `sinir_hatasi`. Let's see: accessing `dizi[dizi.length]` is out of bounds (returns undefined), and if n > length, start index negative. In JS, negative indices return undefined. So it pushes undefined values. That's a logic error. I'd say `yanlis_kosul` for the loop condition `<=` and start index calculation.\n\n2. `stoktaVarMi(urunler, ad)` - Line 9-11\n   - Line 10: `return urunler.map((u) => u.ad).indexOf(ad) > 0;`\n   - Problem: `indexOf` returns -1 if not found, 0 if found at first position. `> 0` means it returns false for first element (index 0) and true for others. Should be `>= 0` or `!== -1`. This is a `yanlis_kosul`.\n\n3. `enPahalilar(urunler, k = 3)` - Line 13-15\n   - Line 14: `return urunler.sort((a, b) => b.fiyat - a.fiyat).slice(0, k);`\n   - Problem: `sort` mutates the original array. This is a side effect (`yan_etki`). The function modifies the input array. That's a real bug if caller doesn't expect mutation.\n\n4. `fiyatlariGetir(idler, getir)` - Line 17-23\n   - Line 19-21: `idler.forEach(async (id) => { fiyatlar[id] = await getir(id); });`\n   - Problem: `forEach` does not wait for async callbacks. The function returns `fiyatlar` immediately before any promises resolve. This is a classic `async_hata`. Should use `Promise.all` with `map`.\n\n5. `sayfala(liste, boyut = 0)` - Line 25-29\n   - Line 27: `for (let i = 0; i < liste.length; i += boyut)`\n   - Problem: Default `boyut = 0`. If `boyut` is 0, `i += 0` creates infinite loop. Also division by zero in slice? Actually `slice(i, i+0)` returns empty array, but loop never increments. This is `yanlis_varsayilan` (default parameter 0 causes infinite loop) and `sinir_hatasi` (infinite loop). The default should be >0 or validate.\n\n6. `zamanlayicilar(isler)` - Line 31-35\n   - Line 32-33: `for (var i = 0; i < isler.length; i++) { setTimeout(() => isler[i].calistir(), 10); }`\n   - Problem: `var` is function-scoped, so by the time setTimeout executes, `i` equals `isler.length`, causing `isler[i]` to be undefined. Classic closure issue. Should use `let` or IIFE. This is `kapsam_hatasi` (scope error) or `yan_etki` (unexpected behavior). The type `kapsam_hatasi` fits.\n\n7. `sehir(kullanici)` - Line 37-40\n   - Line 39: `return kullanici.adres.sehir.toUpperCase();`\n   - Problem: Comment says `adres` is optional. If `kullanici.adres` is undefined, accessing `.sehir` throws TypeError. No null check. This is `null_kontrolu`.\n\n8. `toplamTutar(sepet)` - Line 42-44\n   - Line 43: `return sepet.reduce((t, k) => t + k.fiyat * k.adet, 0);`\n   - Seems fine assuming valid input. No obvious bug.\n\nNow, I need to output only the JSON block with real issues. Let's list them with line numbers and types.\n\n- Line 5: `yanlis_kosul` (loop condition and start index)\n- Line 10: `yanlis_kosul` (indexOf > 0)\n- Line 14: `yan_etki` (mutates input array)\n- Line 19: `async_hata` (forEach doesn't await)\n- Line 27: `yanlis_varsayilan` (default boyut=0 causes infinite loop)\n- Line 32: `kapsam_hatasi` (var in loop with setTimeout)\n- Line 39: `null_kontrolu` (optional adres not checked)\n\nLine numbers refer to the provided code lines. Let's double-check line numbers from the snippet.\n\nThe snippet has line numbers at start of each line. I'll use those.\n\nLine 5: `for (let i = dizi.length - n; i <= dizi.length; i++) sonuc.push(dizi[i]);`\nLine 10: `return urunler.map((u) => u.ad).indexOf(ad) > 0;`\nLine 14: `return urunler.sort((a, b) => b.fiyat - a.fiyat).slice(0, k);`\nLine 19: `idler.forEach(async (id) => {`\nLine 27: `for (let i = 0; i < liste.length; i += boyut) sayfalar.push(liste.slice(i, i + boyut));`\nLine 32: `for (var i = 0; i < isler.length; i++) {`\nLine 39: `return kullanici.adres.sehir.toUpperCase();`\n\nAll good. Now produce JSON array."
+     "text": "The user wants me to analyze the provided JavaScript code and identify real bugs (wrong results, crashes, infinite loops, unexpected side effects) with line numbers and specific error types.\n\nLet me analyze each function:\n\n1. `sonNEleman(dizi, n)` - Line 3-7:\n   - Line 5: `for (let i = dizi.length - n; i <= dizi.length; i++)` - This has an off-by-one error. It should be `i < dizi.length` not `i <= dizi.length`. Also, if `n > dizi.length`, the start index becomes negative, which might be intentional but could cause unexpected behavior. The main bug is accessing `dizi[dizi.length]` which is undefined (out of bounds). This is a `sinir_hatasi` (boundary error) at line 5.\n\n2. `stoktaVarMi(urunler, ad)` - Line 9-11:\n   - Line 10: `return urunler.map((u) => u.ad).indexOf(ad) > 0;` - This checks if index > 0, meaning it returns false if the item is at index 0 (first element). Should be `>= 0` or `!== -1`. This is a `yanlis_kosul` (wrong condition) at line 10.\n\n3. `enPahalilar(urunler, k = 3)` - Line 13-15:\n   - Line 14: `urunler.sort((a, b) => b.fiyat - a.fiyat)` - This mutates the original array (side effect). The function sorts the input array in place. This is a `yan_etki` (side effect) at line 14.\n\n4. `fiyatlariGetir(idler, getir)` - Line 17-23:\n   - Line 19-21: `idler.forEach(async (id) => { fiyatlar[id] = await getir(id); });` - forEach doesn't wait for async callbacks. The function returns `fiyatlar` immediately before the async operations complete. This is an `async_hata` (async error) at line 19 (or the forEach line).\n\n5. `sayfala(liste, boyut = 0)` - Line 25-29:\n   - Line 27: `for (let i = 0; i < liste.length; i += boyut)` - If `boyut` is 0 (default), this creates an infinite loop because `i += 0` never increments. This is a `yanlis_varsayilan` (wrong default) at line 25/27, but the infinite loop manifests at line 27. The root cause is the default parameter value of 0. I'll mark line 27 as the loop line with `yanlis_varsayilan` or maybe `sinir_hatasi`? The type `yanlis_varsayilan` fits for wrong default parameter. But the infinite loop happens at line 27. Let's use `yanlis_varsayilan` at line 25 (where default is set) or line 27. The instruction says \"en belirgin olduğu tek satırla bildir\" (report at the single line where it's most apparent). The infinite loop is at line 27. But the cause is the default value. I think line 27 with `yanlis_varsayilan` is appropriate, or maybe line 25. Let's pick line 27 as the loop line.\n\n6. `zamanlayicilar(isler)` - Line 31-35:\n   - Line 32-33: `for (var i = 0; i < isler.length; i++) { setTimeout(() => isler[i].calistir(), 10); }` - Classic closure problem with `var`. All timeouts will reference the same `i` which will be `isler.length` after loop ends, causing `isler[isler.length]` which is undefined, so `undefined.calistir()` throws TypeError. This is a `kapsam_hatasi` (scope error) at line 33 (where the callback uses `i`).\n\n7. `sehir(kullanici)` - Line 37-40:\n   - Line 39: `return kullanici.adres.sehir.toUpperCase();` - If `kullanici.adres` is undefined (as comment says), this throws \"Cannot read property 'sehir' of undefined\". This is a `null_kontrolu` (null check missing) at line 39.\n\n8. `toplamTutar(sepet)` - Line 42-44:\n   - Line 43: `return sepet.reduce((t, k) => t + k.fiyat * k.adet, 0);` - Seems fine assuming valid input. No obvious bug.\n\nNow I need to output ONLY the JSON block at the end with the real issues.\n\nLet me compile the list:\n1. Line 5: `sinir_hatasi` (out of bounds access)\n2. Line 10: `yanlis_kosul` (indexOf > 0 misses first element)\n3. Line 14: `yan_etki` (mutates input array)\n4. Line 19: `async_hata` (forEach doesn't await async callbacks)\n5. Line 27: `yanlis_varsayilan` (default boyut=0 causes infinite loop)\n6. Line 33: `kapsam_hatasi` (var closure in loop)\n7. Line 39: `null_kontrolu` (missing optional chaining for adres)\n\nAll these are real bugs. I'll format as JSON array."
     },
     {
      "type": "text",
-     "text": "```json\n[\n  {\"satir\": 5, \"tur\": \"yanlis_kosul\"},\n  {\"satir\": 10, \"tur\": \"yanlis_kosul\"},\n  {\"satir\": 14, \"tur\": \"yan_etki\"},\n  {\"satir\": 19, \"tur\": \"async_hata\"},\n  {\"satir\": 27, \"tur\": \"yanlis_varsayilan\"},\n  {\"satir\": 32, \"tur\": \"kapsam_hatasi\"},\n  {\"satir\": 39, \"tur\": \"null_kontrolu\"}\n]\n```"
+     "text": "```json\n[\n  {\"satir\": 5, \"tur\": \"sinir_hatasi\"},\n  {\"satir\": 10, \"tur\": \"yanlis_kosul\"},\n  {\"satir\": 14, \"tur\": \"yan_etki\"},\n  {\"satir\": 19, \"tur\": \"async_hata\"},\n  {\"satir\": 27, \"tur\": \"yanlis_varsayilan\"},\n  {\"satir\": 33, \"tur\": \"kapsam_hatasi\"},\n  {\"satir\": 39, \"tur\": \"null_kontrolu\"}\n]\n```"
     }
    ]
   }

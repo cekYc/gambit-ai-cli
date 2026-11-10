@@ -1,5 +1,7 @@
 import fatura
 from fatura.rapor import satir
+import warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 print(satir("Kalem", 125.0))
 print(satir("Kitap", 300.0, 0.10))

@@ -1,118 +1,128 @@
-from __future__ import annotations
 import heapq
 from collections import defaultdict
 
 
 class DonguHatasi(ValueError):
-    """Bağımlılık grafiğinde döngü bulunduğunda fırlatılır."""
+    """Bağımlılık grafiğinde döngü tespit edildiğinde fırlatılır."""
     def __init__(self, dongu: list[str]):
-        super().__init__("Bağımlılık döngüsü bulundu: " + " -> ".join(dongu) + " -> " + dongu[0])
         self.dongu = dongu
+        super().__init__(f"Bağımlılık döngüsü tespit edildi: {' -> '.join(dongu)}")
 
 
 def kurulum_sirasi(deps: dict[str, list[str]]) -> list[str]:
     """
-    Bağımlılık sözlüğünden topological sıralama döndürür.
+    Topolojik sıralama (Kahn algoritması) ile paket kurulum sırasını belirler.
     
     Args:
-        deps: {paket: [bağımlılıklar]} sözlüğü. Bağımlılıklar tekrar edebilir.
+        deps: Her paketin bağımlılıklarını içeren sözlük. Anahtar paket adı,
+              değer o paketin kurulması için önce kurulması gereken paketler listesi.
     
     Returns:
-        Kurulum sırası (her paket kendi bağımlılıklarından sonra gelir).
-        Aynı anda kurulabilecek paketler alfabetik sırayla yerleştirilir.
+        Tüm paketlerin (bağımlılık olarak geçenler dahil) kurulum sırasını içeren liste.
+        Her paket kendi bağımlılıklarından sonra gelir. Aynı anda kurulabilecek birden
+        fazla paket varsa alfabetik olarak en küçüğü önce gelir.
     
     Raises:
-        DonguHatasi: Grafikte döngü varsa, döngü alfabetik en küçük paketle başlar.
+        DonguHatasi: Bağımlılık grafiğinde döngü varsa, döngüyü oluşturan paketlerin
+                     listesiyle (alfabetik en küçüğüyle başlayacak şekilde).
     """
-    # Tüm düğümleri topla (anahtarlar + bağımlılıklar)
-    tum_dugumler: set[str] = set(deps.keys())
+    # Tüm paketleri topla (anahtarlar + bağımlılık olarak geçenler)
+    tum_paketler = set(deps.keys())
     for bagimlilar in deps.values():
-        tum_dugumler.update(bagimlilar)
+        tum_paketler.update(bagimlilar)
     
-    # Komşuluk listesi (reverse: bagimli -> paket) ve giriş dereceleri
-    komsular: dict[str, list[str]] = defaultdict(list)
-    giris_derecesi: dict[str, int] = {dugum: 0 for dugum in tum_dugumler}
+    # Giriş dereceleri ve komşuluk listesi oluştur
+    giris_derecesi = {p: 0 for p in tum_paketler}
+    komsuluk = defaultdict(list)
     
-    # Kenarları ekle (tekrar eden bağımlılıkları tekilleştir)
     for paket, bagimlilar in deps.items():
-        for bagimli in set(bagimlilar):
-            komsular[bagimli].append(paket)
+        # Tekrar eden bağımlılıkları temizle
+        benzersiz_bagimlilar = set(bagimlilar)
+        for bagimli in benzersiz_bagimlilar:
+            komsuluk[bagimli].append(paket)
             giris_derecesi[paket] += 1
     
-    # Komşuları alfabetik sırala (deterministik işlem için)
-    for k in komsular:
-        komsular[k].sort()
-    
-    # Giriş derecesi 0 olanları min-heap'e ekle
-    heap: list[str] = [dugum for dugum, d in giris_derecesi.items() if d == 0]
+    # Giriş derecesi 0 olan paketleri min-heap'e ekle (alfabetik sıra için)
+    heap = [p for p, d in giris_derecesi.items() if d == 0]
     heapq.heapify(heap)
     
-    sonuc: list[str] = []
+    sonuc = []
     
     while heap:
-        dugum = heapq.heappop(heap)
-        sonuc.append(dugum)
+        paket = heapq.heappop(heap)
+        sonuc.append(paket)
         
-        for komsu in komsular[dugum]:
+        for komsu in komsuluk[paket]:
             giris_derecesi[komsu] -= 1
             if giris_derecesi[komsu] == 0:
                 heapq.heappush(heap, komsu)
     
-    # Döngü kontrolü
-    if len(sonuc) != len(tum_dugumler):
-        kalan = {d for d in tum_dugumler if d not in sonuc}
-        # Bağımlılık yönünde graf oluştur (paket -> bağımlılıklar)
-        bagimlilik_grafi: dict[str, list[str]] = defaultdict(list)
-        for paket, bagimlilar in deps.items():
-            for bagimli in set(bagimlilar):
-                if bagimli in kalan and paket in kalan:
-                    bagimlilik_grafi[paket].append(bagimli)
-        for k in bagimlilik_grafi:
-            bagimlilik_grafi[k].sort()
-        dongu = _dongu_bul(kalan, bagimlilik_grafi)
+    # Döngü kontrolü: işlenemeyen paketler varsa döngü vardır
+    if len(sonuc) != len(tum_paketler):
+        # Döngüyü bul: kalan paketler üzerinden DFS ile döngüyü tespit et
+        kalan = {p for p in tum_paketler if p not in sonuc}
+        
+        # Kalan paketler üzerinde döngü bul
+        dongu = _dongu_bul(kalan, komsuluk, deps)
         raise DonguHatasi(dongu)
     
     return sonuc
 
 
-def _dongu_bul(dugumler: set[str], komsular: dict[str, list[str]]) -> list[str]:
-    """Verilen alt grafikte bir döngü bulur, alfabetik en küçüğüyle başlatır.
-    komsular: u -> [v] şeklinde, u v'ye bağımlı (u depends on v)."""
-    renk: dict[str, int] = {}
-    ebeveyn: dict[str, str] = {}
-    dongu_yolu: list[str] = []
+def _dongu_bul(kalan_paketler: set[str], komsuluk: dict[str, list[str]], 
+                deps: dict[str, list[str]]) -> list[str]:
+    """Kalan paketler içinde bir döngü bulur ve alfabetik en küçüğüyle başlayan liste döndürür.
     
-    def dfs(u: str) -> bool:
-        nonlocal dongu_yolu
-        renk[u] = 1
-        for v in komsular.get(u, []):
-            if v not in dugumler:
-                continue
-            if renk.get(v, 0) == 0:
-                ebeveyn[v] = u
-                if dfs(v):
-                    return True
-            elif renk.get(v) == 1:
-                # Döngü bulundu: u -> ... -> v -> u
-                # v'yi başlangıç olarak al, u'dan v'ye ebeveyn zinciriyle git
-                dongu_yolu = [v]
-                cur = u
-                while cur != v:
-                    dongu_yolu.append(cur)
-                    cur = ebeveyn[cur]
-                dongu_yolu.reverse()  # v'den başla
-                return True
-        renk[u] = 2
-        return False
+    Dönüş formatı: her paket kendisinden sonrakine bağımlıdır (paket -> next), sonuncusu ilki.
+    """
+    # Bağımlılık yönünde komşuluk: paket -> onun bağımlılıkları (sadece kalan paketler)
+    bagimlilik_grafi = defaultdict(list)
+    for paket in kalan_paketler:
+        for bagimli in set(deps.get(paket, [])):
+            if bagimli in kalan_paketler:
+                bagimlilik_grafi[paket].append(bagimli)
     
-    for dugum in sorted(dugumler):
-        if renk.get(dugum, 0) == 0:
-            ebeveyn[dugum] = ""
-            if dfs(dugum):
-                break
+    # DFS ile döngü bul (bağımlılık yönünde: paket -> bağımlılığı)
+    ziyaret_edildi = set()
+    yigin = set()
+    ebeveyn = {}
     
-    if dongu_yolu:
-        min_idx = min(range(len(dongu_yolu)), key=lambda i: dongu_yolu[i])
-        dongu_yolu = dongu_yolu[min_idx:] + dongu_yolu[:min_idx]
+    def dfs(dugum: str) -> list[str] | None:
+        ziyaret_edildi.add(dugum)
+        yigin.add(dugum)
+        
+        for bagimli in sorted(bagimlilik_grafi[dugum]):  # Alfabetik sıra için sıralı gezin
+            if bagimli not in ziyaret_edildi:
+                ebeveyn[bagimli] = dugum
+                sonuc = dfs(bagimli)
+                if sonuc:
+                    return sonuc
+            elif bagimli in yigin:
+                # Döngü bulundu - geriye doğru izle (bağımlılık yönünde)
+                dongu = [bagimli]
+                g = dugum
+                while g != bagimli:
+                    dongu.append(g)
+                    g = ebeveyn[g]
+                dongu.append(bagimli)
+                dongu.reverse()  # artık bağımlılık yönünde: a->b->c->a
+                return dongu
+        
+        yigin.remove(dugum)
+        return None
     
-    return dongu_yolu
+    # Alfabetik sırayla başla ki en küçük paketle başlayan döngü bulunsun
+    for paket in sorted(kalan_paketler):
+        if paket not in ziyaret_edildi:
+            dongu = dfs(paket)
+            if dongu:
+                # dongu şu an: [a, b, c, a] formatında (bağımlılık yönünde)
+                # Son eleman tekrar, çıkar
+                dongu = dongu[:-1]
+                # Alfabetik en küçük elemanla başlat
+                min_indeks = min(range(len(dongu)), key=lambda i: dongu[i])
+                dongu = dongu[min_indeks:] + dongu[:min_indeks]
+                return dongu
+    
+    # Fallback (olmamalı)
+    return sorted(kalan_paketler)[:1]

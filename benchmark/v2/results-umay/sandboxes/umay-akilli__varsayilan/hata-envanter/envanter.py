@@ -3,7 +3,7 @@ class Envanter:
 
     def __init__(self, baslangic=None):
         """baslangic: {ürün: adet} sözlüğü. Kopyalanır; dışarıdaki sözlük değişmez."""
-        self.stok = dict(baslangic) if baslangic else {}
+        self.stok = dict(baslangic) if baslangic is not None else {}
         self.fiyat = {}
 
     def ekle(self, urun, adet, fiyat=None):

@@ -32,7 +32,6 @@ function say(dizi) {
 
 // Sayıların ortalaması; boş dizide 0.
 function ortalama(dizi) {
-  if (dizi.length === 0) return 0;
   return dizi.reduce((a, b) => a + b) / dizi.length;
 }
 

@@ -1,47 +1,69 @@
 'use strict';
 
+/**
+ * TokenBucket implementation for rate limiting.
+ * Tokens refill continuously at a fractional rate over time.
+ */
 class TokenBucket {
   /**
    * @param {Object} options
-   * @param {number} options.capacity - Maksimum jeton kapasitesi (pozitif sonlu sayı)
-   * @param {number} options.refillPerSecond - Saniyede eklenen jeton sayısı (negatif olamaz, sonlu sayı)
-   * @param {Function} [options.now=Date.now] - Milisaniye cinsinden zaman döndüren fonksiyon
+   * @param {number} options.capacity - Maximum number of tokens (positive finite)
+   * @param {number} options.refillPerSecond - Tokens added per second (non-negative finite)
+   * @param {Function} [options.now=Date.now] - Function returning current time in milliseconds
    */
   constructor({ capacity, refillPerSecond, now = Date.now }) {
+    // Validate capacity
     if (!Number.isFinite(capacity) || capacity <= 0) {
-      throw new RangeError('capacity pozitif sonlu bir sayı olmalıdır');
+      throw new RangeError('capacity must be a positive finite number');
     }
+    
+    // Validate refillPerSecond
     if (!Number.isFinite(refillPerSecond) || refillPerSecond < 0) {
-      throw new RangeError('refillPerSecond negatif olamaz ve sonlu bir sayı olmalıdır');
+      throw new RangeError('refillPerSecond must be a non-negative finite number');
     }
+    
+    // Validate now is a function
     if (typeof now !== 'function') {
-      throw new RangeError('now bir fonksiyon olmalıdır');
+      throw new RangeError('now must be a function');
     }
 
     this._capacity = capacity;
     this._refillPerSecond = refillPerSecond;
     this._now = now;
-    this._tokens = capacity; // Kova dolu başlar
-    this._lastRefillTime = now(); // En büyük görülen zaman referansı
+    
+    // Bucket starts full
+    this._tokens = capacity;
+    // Track the largest time reference seen (for clock skew handling)
+    this._lastRefillTime = now();
   }
 
   /**
-   * İç dolum hesaplaması - zaman ilerledikçe jeton ekler
-   * Saat geri giderse _lastRefillTime güncellenmez (en büyük zaman kalır)
+   * Internal method to refill tokens based on elapsed time.
+   * Handles clock going backwards by keeping the largest time reference.
    */
   _refill() {
     const now = this._now();
-    if (now > this._lastRefillTime) {
-      const elapsedSeconds = (now - this._lastRefillTime) / 1000;
-      const addedTokens = elapsedSeconds * this._refillPerSecond;
-      this._tokens = Math.min(this._capacity, this._tokens + addedTokens);
-      this._lastRefillTime = now;
+    
+    // If clock went backwards, don't subtract tokens, just update lastRefillTime
+    // to the larger value (which is already stored)
+    if (now < this._lastRefillTime) {
+      // Clock went backwards, keep the larger timestamp
+      // No refill happens, tokens remain unchanged
+      return;
     }
-    // now <= _lastRefillTime ise saat geri gitmiş, hiçbir şey yapma
+    
+    const elapsedMs = now - this._lastRefillTime;
+    if (elapsedMs > 0 && this._refillPerSecond > 0) {
+      const elapsedSeconds = elapsedMs / 1000;
+      const tokensToAdd = elapsedSeconds * this._refillPerSecond;
+      this._tokens = Math.min(this._capacity, this._tokens + tokensToAdd);
+    }
+    
+    this._lastRefillTime = now;
   }
 
   /**
-   * Mevcut jeton sayısını döner (kesirli olabilir)
+   * Returns the current number of available tokens (can be fractional).
    * @returns {number}
    */
   available() {
@@ -50,44 +72,63 @@ class TokenBucket {
   }
 
   /**
-   * n jeton almayı dener
-   * @param {number} [n=1] - Alınacak jeton sayısı (pozitif sonlu sayı)
-   * @returns {boolean} - Yeterli jeton varsa true, yoksa false (jeton düşmez)
+   * Attempts to take n tokens from the bucket.
+   * @param {number} [n=1] - Number of tokens to take (positive finite)
+   * @returns {boolean} - true if tokens were taken, false otherwise
    */
   tryTake(n = 1) {
+    // Validate n
     if (!Number.isFinite(n) || n <= 0) {
-      throw new RangeError('n pozitif sonlu bir sayı olmalıdır');
+      throw new RangeError('n must be a positive finite number');
     }
+    
     this._refill();
+    
     if (this._tokens >= n) {
       this._tokens -= n;
       return true;
     }
+    
     return false;
   }
 
   /**
-   * n jetonun kullanılabilir olmasına kadar geçecek milisaniye (yukarı yuvarlanmış)
-   * @param {number} [n=1] - Beklenen jeton sayısı (pozitif sonlu sayı)
-   * @returns {number} - Milisaniye (tam sayı), yeterliyse 0, asla olmazsa Infinity
+   * Returns milliseconds until n tokens are available (rounded up).
+   * Returns 0 if enough tokens available now.
+   * Returns Infinity if n > capacity or refillPerSecond is 0 and not enough tokens.
+   * @param {number} [n=1] - Number of tokens needed (positive finite)
+   * @returns {number}
    */
   msUntil(n = 1) {
+    // Validate n
     if (!Number.isFinite(n) || n <= 0) {
-      throw new RangeError('n pozitif sonlu bir sayı olmalıdır');
+      throw new RangeError('n must be a positive finite number');
     }
+    
+    // If n exceeds capacity, it will never be available
     if (n > this._capacity) {
       return Infinity;
     }
+    
     this._refill();
+    
+    // If enough tokens now
     if (this._tokens >= n) {
       return 0;
     }
-    if (this._refillPerSecond === 0) {
+    
+    // If no refill happening, will never get more tokens
+    if (this._refillPerSecond <= 0) {
       return Infinity;
     }
-    const needed = n - this._tokens;
-    const secondsNeeded = needed / this._refillPerSecond;
-    return Math.ceil(secondsNeeded * 1000);
+    
+    // Calculate time needed
+    const tokensNeeded = n - this._tokens;
+    const secondsNeeded = tokensNeeded / this._refillPerSecond;
+    const msNeeded = secondsNeeded * 1000;
+    
+    // Round up to nearest millisecond
+    return Math.ceil(msNeeded);
   }
 }
 

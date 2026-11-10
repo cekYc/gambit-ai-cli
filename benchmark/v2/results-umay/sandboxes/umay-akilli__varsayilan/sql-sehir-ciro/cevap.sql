@@ -12,9 +12,9 @@ siparis_ciro AS (
     GROUP BY m.sehir
 )
 SELECT 
-    sl.sehir,
-    COALESCE(sc.musteri_sayisi, 0) AS musteri_sayisi,
-    COALESCE(sc.toplam_ciro, 0) AS toplam_ciro
-FROM sehirler sl
-LEFT JOIN siparis_ciro sc ON sc.sehir = sl.sehir
-ORDER BY toplam_ciro DESC, sl.sehir ASC;
+    sehirler.sehir,
+    COALESCE(siparis_ciro.musteri_sayisi, 0) AS musteri_sayisi,
+    COALESCE(siparis_ciro.toplam_ciro, 0) AS toplam_ciro
+FROM sehirler
+LEFT JOIN siparis_ciro ON siparis_ciro.sehir = sehirler.sehir
+ORDER BY toplam_ciro DESC, sehirler.sehir ASC;

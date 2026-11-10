@@ -1,6 +1,8 @@
 import time
 import functools
 
+_onbellek = {}
+
 
 def onbellekle(ttl=None, saat=time.monotonic):
     """Fonksiyon sonuçlarını argümanlarına göre önbelleğe alan dekoratör.
@@ -15,37 +17,29 @@ def onbellekle(ttl=None, saat=time.monotonic):
       `bilgi()` {"isabet": n, "iska": m} döndürür (iska: fonksiyonun gerçekten çalıştırıldığı çağrılar).
     """
     def dekorator(f):
-        _cache = {}
         isabet = iska = 0
 
         @functools.wraps(f)
         def sarmal(*args, **kwargs):
             nonlocal isabet, iska
-            try:
-                anahtar = (args, tuple(sorted(kwargs.items())))
-                hash(anahtar)
-            except TypeError:
-                iska += 1
-                return f(*args, **kwargs)
-
-            if anahtar in _cache:
-                deger, zaman = _cache[anahtar]
-                if ttl is None or saat() - zaman <= ttl:
+            anahtar = args + tuple(sorted(kwargs.items()))
+            if ttl is None:
+                if anahtar in _onbellek:
+                    deger, zaman = _onbellek[anahtar]
                     isabet += 1
                     return deger
-
+            else:
+                if anahtar in _onbellek:
+                    deger, zaman = _onbellek[anahtar]
+                    if saat() - zaman <= ttl:
+                        isabet += 1
+                        return deger
             iska += 1
             deger = f(*args, **kwargs)
-            _cache[anahtar] = (deger, saat())
+            _onbellek[anahtar] = (deger, saat())
             return deger
 
-        def temizle():
-            _cache.clear()
-
-        def bilgi():
-            return {"isabet": isabet, "iska": iska}
-
-        sarmal.temizle = temizle
-        sarmal.bilgi = bilgi
+        sarmal.temizle = lambda: _onbellek.clear()
+        sarmal.bilgi = lambda: {"isabet": isabet, "iska": iska}
         return sarmal
     return dekorator

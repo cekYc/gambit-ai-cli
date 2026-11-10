@@ -7,15 +7,13 @@ def tutar(metin):
     metin = metin.strip()
     if "," in metin:
         tam, kurus = metin.split(",")
-        tam = float(tam.replace(".", ""))
-        # Tek basamaklı kuruş ondalık (5 -> 0.5), iki basamaklı kuruş (05 -> 0.05)
-        kurus_val = float(kurus) / (10 if len(kurus) == 1 else 100)
-        return tam + kurus_val
-    # Nokta varsa binlik ayırıcıdır (örn. "32.500" -> 32500)
+        kurus = kurus.ljust(2, "0")  # tek basamaklıysa 5 -> 50 yap
+        return float(tam.replace(".", "")) + float(kurus) / 100
+    # Ondalık yok ama binlik ayırıcı (nokta) varsa noktaları sil
     return float(metin.replace(".", ""))
 
 
 def tarih(metin):
-    """"GG.AA.YYYY" biçimindeki tarihi date nesnesine çevirir."""
+    """GG.AA.YYYY" biçimindeki tarihi date nesnesine çevirir."""
     g, a, y = metin.strip().split(".")
     return date(int(y), int(a), int(g))

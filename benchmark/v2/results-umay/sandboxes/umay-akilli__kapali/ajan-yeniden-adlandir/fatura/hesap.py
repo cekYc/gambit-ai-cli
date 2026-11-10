@@ -1,4 +1,5 @@
 """KDV hesapları."""
+
 import warnings
 
 
@@ -9,7 +10,7 @@ def kdv_hesapla(tutar, oran=0.20):
 
 def hesapKdv(tutar, oran=0.20):
     """Tutarın KDV'sini döndürür (kuruşa yuvarlanmış).
-
+    
     .. deprecated:: 1.0
        Use :func:`kdv_hesapla` instead.
     """

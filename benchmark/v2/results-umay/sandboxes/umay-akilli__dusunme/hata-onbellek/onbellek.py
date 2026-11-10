@@ -1,5 +1,6 @@
 import time
 import functools
+import inspect
 
 
 def onbellekle(ttl=None, saat=time.monotonic):
@@ -16,28 +17,32 @@ def onbellekle(ttl=None, saat=time.monotonic):
     """
     def dekorator(f):
         onbellek = {}
-        isabet = 0
-        iska = 0
+        isabet = iska = 0
+        sig = inspect.signature(f)
 
         @functools.wraps(f)
         def sarmal(*args, **kwargs):
             nonlocal isabet, iska
-
-            # Hashlenebilirlik kontrolü
             try:
-                anahtar = (args, tuple(sorted(kwargs.items())))
+                # Argümanları fonksiyon imzasına bağla ve normalize et (varsayılan değerler dahil)
+                bound = sig.bind(*args, **kwargs)
+                bound.apply_defaults()
+                # Sıralı tuple olarak anahtar oluştur (kwargs sırası artık önemsiz)
+                anahtar = tuple(bound.arguments.items())
+                # Hashlenebilirlik testi
                 hash(anahtar)
             except TypeError:
-                # Hashlenemeyen argüman: önbelleğe almadan doğrudan çalıştır
+                # Hashlenemezse (ör. liste içinde liste) önbelleğe almaz, doğrudan çalıştırır
                 iska += 1
                 return f(*args, **kwargs)
 
             if anahtar in onbellek:
                 deger, zaman = onbellek[anahtar]
+                # TTL: süre DOLMADIYSA (veya ttl None ise) hit, DOLDUYSA miss
                 if ttl is None or saat() - zaman <= ttl:
                     isabet += 1
                     return deger
-                # TTL dolmuş, önbellekten silip yeniden hesapla
+                # Süresi dolmuşsa önbellekten silip yeniden hesaplayacak
                 del onbellek[anahtar]
 
             iska += 1
@@ -46,8 +51,9 @@ def onbellekle(ttl=None, saat=time.monotonic):
             return deger
 
         def temizle():
-            nonlocal onbellek
+            nonlocal isabet, iska
             onbellek.clear()
+            isabet = iska = 0
 
         def bilgi():
             return {"isabet": isabet, "iska": iska}

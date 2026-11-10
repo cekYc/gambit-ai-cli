@@ -1,60 +1,44 @@
-from __future__ import annotations
-
-"""Türkçe metin işleme yardımcı fonksiyonları (sadece standart kütüphane)."""
+# -*- coding: utf-8 -*-
+"""Türkçe metin işleme yardımcıları (sadece standart kitaplık)."""
 
 _TURKISH_ORDER = "0123456789abcçdefgğhıijklmnoöpqrsştuüvwxyz"
-_TURKISH_INDEX = {ch: idx for idx, ch in enumerate(_TURKISH_ORDER)}
-
+_TURKISH_RANK = {ch: idx for idx, ch in enumerate(_TURKISH_ORDER)}
 
 def tr_lower(s: str) -> str:
-    """s'yi Türkçe kurallarla küçük harfe çevirir (I -> ı, İ -> i)."""
-    result = []
+    """s'i Türkçe kurallara göre küçük harfe çevirir (I->ı, İ->i)."""
+    out = []
     for ch in s:
-        if ch == 'I':
-            result.append('ı')
-        elif ch == 'İ':
-            result.append('i')
+        if ch == "I":
+            out.append("ı")
+        elif ch == "İ":
+            out.append("i")
         else:
-            result.append(ch.lower())
-    return ''.join(result)
-
+            out.append(ch.lower())
+    return "".join(out)
 
 def tr_upper(s: str) -> str:
-    """s'yi Türkçe kurallarla büyük harfe çevirir (i -> İ, ı -> I)."""
-    result = []
+    """s'i Türkçe kurallara göre büyük harfe çevirir (i->İ, ı->I)."""
+    out = []
     for ch in s:
-        if ch == 'i':
-            result.append('İ')
-        elif ch == 'ı':
-            result.append('I')
+        if ch == "i":
+            out.append("İ")
+        elif ch == "ı":
+            out.append("I")
         else:
-            result.append(ch.upper())
-    return ''.join(result)
-
+            out.append(ch.upper())
+    return "".join(out)
 
 def _sort_key(word: str):
     lowered = tr_lower(word)
     key = []
     for ch in lowered:
-        if ch in _TURKISH_INDEX:
-            key.append((1, _TURKISH_INDEX[ch]))
-        else:
-            # Alfabe dışındaki karakterler (boşluk, noktalama vb.)
-            # tüm alfabedeki karakterlerden önce gelir ve kendi aralarında
-            # Unicode kod noktasına göre sıralanır.
+        rank = _TURKISH_RANK.get(ch)
+        if rank is None:
             key.append((0, ord(ch)))
+        else:
+            key.append((1, rank))
     return key
 
-
 def tr_sorted(words: list[str]) -> list[str]:
-    """Kelimeleri Türk alfabesine göre (büyük/küçük harf farkı görmezden
-    gelinerek, Türkçe kurallarla küçültülerek) sıralanmış yeni bir liste
-    döndürür. Girdi listesi değiştirilmez.
-
-    Sıralama kuralı:
-      - Alfabe: 0123456789abcçdefgğhıijklmnoöpqrsştuüvwxyz
-      - Alfabe dışı karakterler önce, kendi aralarında Unicode kod noktasıyla
-      - Önek olan kısa kelime önce gelir
-      - Eşit anahtarlar girdisindeki sıralamayı korur (stabil)
-    """
+    """Kelimeleri Türk alfabesine göre sıralar; orijinal listeyi değiştirmez."""
     return sorted(words, key=_sort_key)

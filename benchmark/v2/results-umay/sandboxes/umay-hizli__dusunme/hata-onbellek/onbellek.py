@@ -1,9 +1,9 @@
-import time
 import functools
+import time
 
 
 def onbellekle(ttl=None, saat=time.monotonic):
-    """Fonksiyon sonuçlarını argümanlarına göre önbelleğe alan dekoratör.
+    """Fonksiyon sonuçlarını argümanlara göre önbelleğe alan dekoratör.
 
     - Aynı argümanlarla (konumsal ve isimli; isimli argümanların yazılış sırası önemsiz) yapılan çağrılar
       fonksiyonu yeniden çalıştırmaz.
@@ -15,33 +15,34 @@ def onbellekle(ttl=None, saat=time.monotonic):
       `bilgi()` {"isabet": n, "iska": m} döndürür (iska: fonksiyonun gerçekten çalıştırıldığı çağrılar).
     """
     def dekorator(f):
-        cache = {}
+        _cache = {}
         isabet = iska = 0
 
         @functools.wraps(f)
         def sarmal(*args, **kwargs):
             nonlocal isabet, iska
+
             try:
                 anahtar = (args, tuple(sorted(kwargs.items())))
+                hash(anahtar)
             except TypeError:
-                # Hashlenemeyen argümanlar: önbelleğe alınmadan doğrudan çalıştır.
-                iska += 1
+                # Hashlenemeyen argüman: önbelleğe alınmadan doğrudan çalıştır.
                 return f(*args, **kwargs)
 
-            if anahtar in cache:
-                deger, zaman = cache[anahtar]
-                if ttl is None or saat() - zaman <= ttl:
+            zaman = saat()
+            if anahtar in _cache:
+                deger, kayit_zamani = _cache[anahtar]
+                if ttl is None or zaman - kayit_zamani <= ttl:
                     isabet += 1
                     return deger
-                # Süresi geçmiş kayıt: fonksiyon yeniden çalıştırılacak.
 
             iska += 1
             deger = f(*args, **kwargs)
-            cache[anahtar] = (deger, saat())
+            _cache[anahtar] = (deger, saat())
             return deger
 
         def temizle():
-            cache.clear()
+            _cache.clear()
 
         def bilgi():
             return {"isabet": isabet, "iska": iska}
@@ -49,4 +50,5 @@ def onbellekle(ttl=None, saat=time.monotonic):
         sarmal.temizle = temizle
         sarmal.bilgi = bilgi
         return sarmal
+
     return dekorator

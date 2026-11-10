@@ -28,81 +28,72 @@ class KutuphaneTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             s.odunc_ver(1, 2, date(2026, 1, 2))
 
-    def test_ceza_yok_14_gun_icinde(self):
+    def test_ceza_hesaplama(self):
         s = servis()
+        # 14 gün içinde iade -> ceza yok
         s.odunc_ver(1, 1, date(2026, 1, 1))
-        kayit = s.iade_al(1, date(2026, 1, 14))  # 13 gün fark
-        self.assertEqual(kayit.ceza, 0.0)
-        s.odunc_ver(2, 1, date(2026, 1, 1))
-        kayit = s.iade_al(2, date(2026, 1, 15))  # 14 gün fark
+        kayit = s.iade_al(1, date(2026, 1, 15))
         self.assertEqual(kayit.ceza, 0.0)
 
-    def test_ceza_ilk_7_gun_gecikme(self):
-        s = servis()
-        s.odunc_ver(1, 1, date(2026, 1, 1))
-        # 15. gün = 1 gün gecikme -> 2.50 TL
-        kayit = s.iade_al(1, date(2026, 1, 16))
-        self.assertEqual(kayit.ceza, 2.50)
-        # 21. gün = 7 gün gecikme -> 7 * 2.5 = 17.50 TL
+        # 1 gün gecikme (15. gün) -> 2.50 TL
         s.odunc_ver(2, 1, date(2026, 1, 1))
-        kayit = s.iade_al(2, date(2026, 1, 22))
-        self.assertEqual(kayit.ceza, 17.50)
+        kayit = s.iade_al(2, date(2026, 1, 16))
+        self.assertEqual(kayit.ceza, 2.5)
 
-    def test_ceza_7_gun_sonra_5_tl(self):
-        s = servis()
-        s.odunc_ver(1, 1, date(2026, 1, 1))
-        # 22. gün = 8 gün gecikme -> 7*2.5 + 1*5 = 22.50
-        kayit = s.iade_al(1, date(2026, 1, 23))
-        self.assertEqual(kayit.ceza, 22.50)
+        # 7 gün gecikme -> 7 * 2.5 = 17.50 TL
+        s.odunc_ver(3, 1, date(2026, 1, 1))
+        kayit = s.iade_al(3, date(2026, 1, 22))
+        self.assertEqual(kayit.ceza, 17.5)
 
-    def test_ceza_max_150_tl(self):
-        s = servis()
-        s.odunc_ver(1, 1, date(2026, 1, 1))
-        # Çok uzun gecikme -> max 150 TL
-        kayit = s.iade_al(1, date(2026, 6, 1))
+        # 8 gün gecikme -> 7*2.5 + 1*5 = 22.50 TL
+        s.odunc_ver(4, 1, date(2026, 1, 1))
+        kayit = s.iade_al(4, date(2026, 1, 23))
+        self.assertEqual(kayit.ceza, 22.5)
+
+        # Çok gecikme -> 150 TL sınırı
+        s.odunc_ver(5, 1, date(2026, 1, 1))
+        kayit = s.iade_al(5, date(2026, 7, 1))
         self.assertEqual(kayit.ceza, 150.0)
 
-    def test_ogrenci_ceza_50_indirim(self):
+    def test_ogrenci_indirimi(self):
         s = servis()
-        s.odunc_ver(1, 2, date(2026, 1, 1))  # Can öğrenci
-        # 22. gün = 8 gün gecikme -> normal 22.50, öğrenci 11.25
-        kayit = s.iade_al(1, date(2026, 1, 23))
-        self.assertEqual(kayit.ceza, 11.25)
-        # Max ceza da öğrencide 75 TL
+        # Öğrenci 10 gün gecikme -> normalde 7*2.5 + 3*5 = 32.50, indirimli 16.25
+        s.odunc_ver(1, 2, date(2026, 1, 1))
+        kayit = s.iade_al(1, date(2026, 1, 25))
+        self.assertEqual(kayit.ceza, 16.25)
+
+        # Öğrenci çok gecikme -> 150 TL sınırı sonra %50 = 75.0
         s.odunc_ver(2, 2, date(2026, 1, 1))
-        kayit = s.iade_al(2, date(2026, 6, 1))
+        kayit = s.iade_al(2, date(2026, 7, 1))
         self.assertEqual(kayit.ceza, 75.0)
 
-    def test_standart_uye_kitap_siniri_3(self):
+    def test_toplam_ceza(self):
         s = servis()
+        s.odunc_ver(1, 1, date(2026, 1, 1))
+        s.iade_al(1, date(2026, 1, 16))  # 2.50
+        s.odunc_ver(2, 1, date(2026, 2, 1))
+        s.iade_al(2, date(2026, 2, 16))  # 2.50
+        self.assertEqual(s.toplam_ceza(1), 5.0)
+
+    def test_odunc_limiti_standart(self):
+        s = servis()
+        # Standart üye max 3 kitap
         s.odunc_ver(1, 1, date(2026, 1, 1))
         s.odunc_ver(2, 1, date(2026, 1, 1))
         s.odunc_ver(3, 1, date(2026, 1, 1))
         with self.assertRaises(ValueError):
             s.odunc_ver(4, 1, date(2026, 1, 1))
 
-    def test_ogrenci_uye_kitap_siniri_5(self):
+    def test_odunc_limiti_ogrenci(self):
         s = servis()
-        for i in range(1, 6):
-            s.odunc_ver(i, 2, date(2026, 1, 1))
+        # Öğrenci max 5 kitap
+        s.odunc_ver(1, 2, date(2026, 1, 1))
+        s.odunc_ver(2, 2, date(2026, 1, 1))
+        s.odunc_ver(3, 2, date(2026, 1, 1))
+        s.odunc_ver(4, 2, date(2026, 1, 1))
+        s.odunc_ver(5, 2, date(2026, 1, 1))
         with self.assertRaises(ValueError):
             s.odunc_ver(6, 2, date(2026, 1, 1))
-
-    def test_toplam_ceza(self):
-        s = servis()
-        # Ayşe (standart) - 2 kitap iade, cezalar: 2.50 + 17.50 = 20.00
-        s.odunc_ver(1, 1, date(2026, 1, 1))
-        s.odunc_ver(2, 1, date(2026, 1, 1))
-        s.iade_al(1, date(2026, 1, 16))  # 2.50
-        s.iade_al(2, date(2026, 1, 22))  # 17.50
-        self.assertEqual(s.toplam_ceza(1), 20.00)
-        # Can (ogrenci) - 1 kitap iade, ceza: 11.25
-        s.odunc_ver(3, 2, date(2026, 1, 1))
-        s.iade_al(3, date(2026, 1, 23))  # 11.25
-        self.assertEqual(s.toplam_ceza(2), 11.25)
-        # İade edilmemiş kitaplar dahil edilmez
-        s.odunc_ver(4, 1, date(2026, 1, 1))
-        self.assertEqual(s.toplam_ceza(1), 20.00)
 
 
 if __name__ == "__main__":

@@ -1,126 +1,125 @@
-"""Paket kurulum sırası (topolojik sıralama) modülü.
-
-Standart kitaplık ile yazılmıştır; binlerce paketli bağımlılık grafinde de
-hızlı ve deterministik sonuç üretir.
-"""
+import heapq
 
 
 class DonguHatasi(ValueError):
-    """Bağımlılık grafiğinde döngü bulunduğunda fırlatılır.
+    """Bağımlılık grafiğinde bir döngü bulunduğunda fırlatılır."""
 
-    Attributes:
-        dongu: Döngüyü oluşturan paketlerin listesi. Her paket listede
-            kendisinden sonraki pakete bağımlıdır ve sonuncusu ilkine
-            bağımlıdır. Liste döngüdeki alfabetik olarak en küçük paketle
-            başlar (kendine bağımlı paket için ["x"] şeklindedir).
-    """
-
-    def __init__(self, dongu: list[str]):
-        super().__init__(f"DonguHatasi: {dongu}")
+    def __init__(self, dongu):
         self.dongu = dongu
-
-
-def _donguyu_bul(baslangic: str, dugumler: set[str], kenar: dict[str, list[str]]) -> list[str] | None:
-    """Verilen başlangıçtan çıkan bir döngüyü bulur.
-
-    Bulunan döngü, listedeki her elemanın sıradaki elemana bağlı olduğu,
-    sonuncunun ise ilkine bağlı olduğu biçimdedir ve alfabetik olarak en
-    küçük paketle başlar.
-    """
-    path: list[str] = [baslangic]
-    in_path: dict[str, int] = {baslangic: 0}
-
-    def dfs(node: str) -> list[str] | None:
-        for nxt in sorted(kenar.get(node, [])):
-            if nxt not in dugumler:
-                continue
-            if nxt in in_path:
-                # Döngü bulundu: in_path[nxt] ... son (nxt tekrar eklenmez)
-                return path[in_path[nxt]:]
-            path.append(nxt)
-            in_path[nxt] = len(path) - 1
-            sonuc = dfs(nxt)
-            if sonuc is not None:
-                return sonuc
-            path.pop()
-            del in_path[nxt]
-        return None
-
-    return dfs(baslangic)
+        super().__init__(f"Bagimlilik dongusu tespit edildi: {' -> '.join(dongu)}")
 
 
 def kurulum_sirasi(deps: dict[str, list[str]]) -> list[str]:
-    """Bağımlılıklara göre paket kurulum sırasını döndürür.
+    """Topolojik sıralama döndürür; eşit seçeneklerde alfabetik olarak küçükten büyüğe.
 
-    Args:
-        deps: Anahtar her paketin adı, değer o paketten önce kurulması
-            gereken paketlerin listesi. Yalnızca bağımlılık olarak geçen
-            paketler de sonuçta yer alır.
+    Parametreler
+    ----------
+    deps : dict[str, list[str]]
+        Her anahtar bir pakettir; değerler o paketten önce kurulması gereken paketlerdir.
+        Aynı bağımlılık birden fazla kez gelebilir.
 
-    Returns:
-        Her paket kendi bağımlı olduğu paketlerden sonra gelen, alfabetik
-        kuralı ile sıralanmış paket isimleri listesi.
+    Döndürür
+    --------
+    list[str]
+        Her paketin kendi bağımlılıklarından sonra gelen paketlerin sıralanmış listesi.
 
-    Raises:
-        DonguHatasi: Bağımlılık grafiğinde döngü varsa.
+    Fırlatır
+    --------
+    DonguHatasi
+        Grafikte bir döngü varsa. ``dongu`` özniteliği döngüyü oluşturan paketlerin listesi,
+        alfabetik en küçük paketten başlar ve her paket listenin sonraki elemanına bağımlıdır;
+        sonuncu ilke ba˙ğlıdır (kendine bağımlı paket için tek elemanlı liste).
     """
-    # Tüm paketleri topla (anahtarlar ve sadece-bağımlılık olarak geçenler)
-    dugumler: set[str] = set(deps.keys())
-    for liste in deps.values():
-        dugumler.update(liste)
+    # Tüm paketleri topla (anahtarlar ve bağımlılık olarak geçenler).
+    paketler = set(deps.keys())
+    for bagimliliklar in deps.values():
+        paketler.update(bagimliliklar)
 
-    # Kenar: bagimli -> bagimlilik (bagimlilik önce kurulur)
-    kenar: dict[str, list[str]] = {d: [] for d in dugumler}
-    giris_derecesi: dict[str, int] = {d: 0 for d in dugumler}
+    # Adjacency listesi ve gelen kenar sayıları.
+    # edge: dependency -> package (dependency önce kurulmalı)
+    giden: dict[str, set[str]] = {p: set() for p in paketler}
+    gelen: dict[str, int] = {p: 0 for p in paketler}
 
-    for bagimli, bagimliliklar in deps.items():
+    for paket, bagimliliklar in deps.items():
         for bagimlilik in bagimliliklar:
-            if bagimlilik not in dugumler:
-                continue
-            # Aynı bağımlık iki kez yazılmış olabilir: tekilleştir
-            if bagimlilik not in kenar[bagimli]:
-                kenar[bagimli].append(bagimlilik)
-                giris_derecesi[bagimlilik] += 1
+            if bagimlilik not in giden:
+                giden[bagimlilik] = set()
+                gelen[bagimlilik] = 0
+            if paket not in giden[bagimlilik]:
+                giden[bagimlilik].add(paket)
+                gelen[paket] += 1
 
-    # Küçükten büyüğe sıralanmış kenar listeleri (deterministik çıkış)
-    for d in dugumler:
-        kenar[d].sort()
+    # Min-heap ile alfabetik olarak en küçük sıfır-gelen-kenarlı paketten başla.
+    kuyruk = [p for p in paketler if gelen[p] == 0]
+    heapq.heapify(kuyruk)
 
-    # Kahn algoritması: o an kurabilecekler (giriş derecesi 0) alfabetik
-    sıfır_giris: list[str] = sorted([d for d in dugumler if giris_derecesi[d] == 0])
-    sonuc: list[str] = []
+    sirali: list[str] = []
+    while kuyruk:
+        p = heapq.heappop(kuyruk)
+        sirali.append(p)
+        for komsu in giden[p]:
+            gelen[komsu] -= 1
+            if gelen[komsu] == 0:
+                heapq.heappush(kuyruk, komsu)
 
-    while sıfır_giris:
-        # Alfabetik olarak en küçük paketi seç
-        mevcut = sıfır_giris.pop(0)
-        sonuc.append(mevcut)
+    if len(sirali) != len(paketler):
+        dongu_paketleri = set(paketler) - set(sirali)
+        dongu = _bul_dongu(deps, dongu_paketleri)
+        raise DonguHatasi(dongu)
 
-        for komşu in kenar[mevcut]:
-            giris_derecesi[komşu] -= 1
-            if giris_derecesi[komşu] == 0:
-                sıfır_giris.append(komşu)
-                sıfır_giris.sort()
+    return sirali
 
-    if len(sonuc) != len(dugumler):
-        # Döngü var: döngüyü oluşturan paketleri bul
-        kalan = set(dugumler) - set(sonuc)
-        for baslangic in sorted(kalan):
-            dongu = _donguyu_bul(baslangic, dugumler, kenar)
-            if dongu is not None:
-                raise DonguHatasi(dongu)
-        # Güvenlik amaçlı (asla buraya düşmemesi gerekir)
-        raise DonguHatasi(sorted(kalan))
 
-    return sonuc
+def _bul_dongu(deps: dict[str, list[str]], dongu_paketleri: set[str]) -> list[str]:
+    """Verilen paketler içinde bir döngü bulur ve formatlanmış liste döndürür."""
+    # Kısıtlanmış adjacency: yalnızca döngü paketleri arasında.
+    local: dict[str, list[str]] = {}
+    for p in dongu_paketleri:
+        local[p] = [b for b in deps.get(p, []) if b in dongu_paketleri]
+
+    baslangic = min(dongu_paketleri)
+
+    # DFS ile bir döngü bul; path içinde paketler, indeks ile hızlı back-edge tespiti.
+    renk: dict[str, int] = {}  # 0 ziyaret edilmedi, 1 işlemde, 2 bitti
+    yigin: list[str] = []
+    pozisyon: dict[str, int] = {}
+
+    def dfs(u: str) -> list[str] | None:
+        renk[u] = 1
+        pozisyon[u] = len(yigin)
+        yigin.append(u)
+        for v in local[u]:
+            if renk.get(v, 0) == 1:
+                # Geri kenar bulundu; yigin[pozisyon[v]:] bir döngü.
+                dongu = yigin[pozisyon[v]:].copy()
+                return dongu
+            if renk.get(v, 0) == 0:
+                sonuc = dfs(v)
+                if sonuc is not None:
+                    return sonuc
+        yigin.pop()
+        pozisyon.pop(u, None)
+        renk[u] = 2
+        return None
+
+    dongu = dfs(baslangic)
+    if dongu is None:
+        # Fallback: komşuluk listesini dolaşarak döngü bul.
+        for p in sorted(dongu_paketleri):
+            if renk.get(p, 0) == 0:
+                dongu = dfs(p)
+                if dongu is not None:
+                    break
+    if dongu is None:
+        dongu = [baslangic]
+
+    return dongu
+
 
 if __name__ == "__main__":
-    # Hızlı manuel test
-    print(kurulum_sirasi({"a": ["b", "c"], "b": ["c"], "c": []}))  # ['c', 'b', 'a']
-    try:
-        kurulum_sirasi({"a": ["b"], "b": ["a"]})
-    except DonguHatasi as e:
-        print("dongu:", e.dongu)  # ['a', 'b']
-    try:
-        kurulum_sirasi({"x": ["x"]})
-    except DonguHatasi as e:
-        print("kendine:", e.dongu)  # ['x']
+    # Hızlı manuel testler.
+    print(kurulum_sirasi({"a": ["b"], "b": ["c"], "c": []}))  # ['c', 'b', 'a']
+    print(kurulum_sirasi({"a": ["b", "b"], "b": ["a"]}))  # DonguHatasi ['a', 'b']
+    print(kurulum_sirasi({"x": ["x"]}))  # DonguHatasi ['x']
+    print(kurulum_sirasi({}))  # []
+    print(kurulum_sirasi({"a": ["b"], "c": ["b"]}))  # ['b', 'a', 'c']

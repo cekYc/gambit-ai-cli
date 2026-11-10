@@ -1,39 +1,38 @@
-WITH siparis_tutarlari AS (
+WITH siparis_tutarlar AS (
     SELECT 
+        s.id AS siparis_id,
         m.sehir,
-        s.id as siparis_id,
-        SUM(sk.adet * sk.birim_fiyat) as tutar
+        SUM(sk.adet * sk.birim_fiyat) AS tutar
     FROM siparisler s
     JOIN musteriler m ON s.musteri_id = m.id
     JOIN siparis_kalemleri sk ON s.id = sk.siparis_id
     GROUP BY s.id, m.sehir
 ),
-siralanmis AS (
+siralanmis_tutarlar AS (
     SELECT 
         sehir,
         tutar,
-        ROW_NUMBER() OVER (PARTITION BY sehir ORDER BY tutar) as rn,
-        COUNT(*) OVER (PARTITION BY sehir) as cnt
-    FROM siparis_tutarlari
+        ROW_NUMBER() OVER (PARTITION BY sehir ORDER BY tutar) AS rn,
+        COUNT(*) OVER (PARTITION BY sehir) AS cnt
+    FROM siparis_tutarlar
 ),
-medyan_hesapla AS (
+sehir_medyan AS (
     SELECT 
         sehir,
-        cnt as siparis_sayisi,
-        CASE 
-            WHEN cnt % 2 = 1 THEN 
-                MAX(CASE WHEN rn = (cnt + 1) / 2 THEN tutar END)
-            ELSE 
-                (MAX(CASE WHEN rn = cnt / 2 THEN tutar END) + 
-                 MAX(CASE WHEN rn = cnt / 2 + 1 THEN tutar END)) / 2.0
-        END as medyan
-    FROM siralanmis
+        cnt AS siparis_sayisi,
+        ROUND(
+            CASE 
+                WHEN cnt % 2 = 1 THEN
+                    MAX(CASE WHEN rn = (cnt + 1) / 2 THEN tutar END)
+                ELSE
+                    (MAX(CASE WHEN rn = cnt / 2 THEN tutar END) + 
+                     MAX(CASE WHEN rn = cnt / 2 + 1 THEN tutar END)) / 2.0
+            END, 2
+        ) AS medyan
+    FROM siralanmis_tutarlar
     WHERE cnt >= 2
     GROUP BY sehir, cnt
 )
-SELECT 
-    sehir,
-    siparis_sayisi,
-    ROUND(medyan, 2) as medyan
-FROM medyan_hesapla
+SELECT sehir, siparis_sayisi, medyan
+FROM sehir_medyan
 ORDER BY medyan DESC, sehir ASC;

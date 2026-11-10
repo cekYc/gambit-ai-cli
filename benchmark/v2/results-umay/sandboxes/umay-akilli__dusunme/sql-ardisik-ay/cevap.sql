@@ -2,34 +2,39 @@ WITH customer_months AS (
     SELECT 
         m.ad AS musteri_adi,
         strftime('%Y-%m', s.tarih) AS ay,
-        (CAST(strftime('%Y', s.tarih) AS INTEGER) * 12 + CAST(strftime('%m', s.tarih) AS INTEGER)) AS ay_no
+        (CAST(strftime('%Y', s.tarih) AS INTEGER) * 12 + CAST(strftime('%m', s.tarih) AS INTEGER)) AS ay_num
     FROM siparisler s
     JOIN musteriler m ON s.musteri_id = m.id
-    GROUP BY m.id, ay
+    GROUP BY m.ad, strftime('%Y-%m', s.tarih)
 ),
-sequenced AS (
-    SELECT
+sequences AS (
+    SELECT 
         musteri_adi,
         ay,
-        ay_no,
-        ROW_NUMBER() OVER (PARTITION BY musteri_adi ORDER BY ay_no) AS rn,
-        ay_no - ROW_NUMBER() OVER (PARTITION BY musteri_adi ORDER BY ay_no) AS grp
+        ay_num,
+        ROW_NUMBER() OVER (PARTITION BY musteri_adi ORDER BY ay_num) AS rn,
+        ay_num - ROW_NUMBER() OVER (PARTITION BY musteri_adi ORDER BY ay_num) AS grp
     FROM customer_months
 ),
 grouped AS (
-    SELECT
+    SELECT 
         musteri_adi,
         MIN(ay) AS baslangic_ay,
-        COUNT(*) AS seri_uzunlugu
-    FROM sequenced
+        COUNT(*) AS seri_uzunlugu,
+        MIN(ay_num) AS baslangic_ay_num
+    FROM sequences
     GROUP BY musteri_adi, grp
 ),
 ranked AS (
-    SELECT
+    SELECT 
         musteri_adi,
         seri_uzunlugu,
         baslangic_ay,
-        ROW_NUMBER() OVER (PARTITION BY musteri_adi ORDER BY seri_uzunlugu DESC, baslangic_ay ASC) AS rn
+        baslangic_ay_num,
+        ROW_NUMBER() OVER (
+            PARTITION BY musteri_adi 
+            ORDER BY seri_uzunlugu DESC, baslangic_ay_num ASC
+        ) AS rn
     FROM grouped
     WHERE seri_uzunlugu >= 3
 )

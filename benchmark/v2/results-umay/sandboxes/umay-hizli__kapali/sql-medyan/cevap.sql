@@ -1,35 +1,39 @@
-WITH sip_tutar AS (
-  SELECT s.id AS siparis_id, m.sehir,
-         SUM(sk.adet * sk.birim_fiyat) AS tutar
-  FROM siparisler s
-  JOIN musteriler m ON m.id = s.musteri_id
-  JOIN siparis_kalemleri sk ON sk.siparis_id = s.id
-  GROUP BY s.id
+-- SQLite 3.50 + CTE ve pencere fonksiyonları ile şehir bazlı sipariş sayısı ve medyan sipariş tutarı
+-- Iadeler dikkate alınmaz; sipariş tutarı = kalem adet × birim_fiyat toplamı
+WITH siparis_tutar AS (
+    SELECT
+        s.id AS siparis_id,
+        m.sehir,
+        COALESCE(SUM(sk.adet * sk.birim_fiyat), 0) AS toplam_tutar
+    FROM siparisler s
+    JOIN musteriler m ON m.id = s.musteri_id
+    LEFT JOIN siparis_kalemleri sk ON sk.siparis_id = s.id
+    GROUP BY s.id, m.sehir
 ),
-sirala AS (
-  SELECT sehir, tutar,
-         ROW_NUMBER() OVER (PARTITION BY sehir ORDER BY tutar) AS rn_asc,
-         COUNT(*) OVER (PARTITION BY sehir) AS n
-  FROM sip_tutar
-),
-medyan AS (
-  SELECT sehir,
-         AVG(tutar) AS medyan,
-         MAX(n) AS n
-  FROM sirala
-  WHERE (n % 2 = 1 AND rn_asc = (n + 1) / 2)
-     OR (n % 2 = 0 AND rn_asc IN (n / 2, n / 2 + 1))
-  GROUP BY sehir
-),
-sayi AS (
-  SELECT sehir, COUNT(*) AS siparis_sayisi
-  FROM sip_tutar
-  GROUP BY sehir
+sirali AS (
+    SELECT
+        sehir,
+        toplam_tutar,
+        ROW_NUMBER() OVER (PARTITION BY sehir ORDER BY toplam_tutar) AS sira,
+        COUNT(*) OVER (PARTITION BY sehir) AS adet
+    FROM siparis_tutar
 )
-SELECT m.sehir,
-       s.siparis_sayisi,
-       ROUND(m.medyan, 2) AS medyan
-FROM medyan m
-JOIN sayi s ON s.sehir = m.sehir
-WHERE m.n >= 2
-ORDER BY m.medyan DESC, m.sehir ASC;
+SELECT
+    sehir AS sehir,
+    adet AS siparis_sayisi,
+    ROUND(
+        CASE
+            WHEN adet % 2 = 1 THEN
+                MAX(CASE WHEN sira = (adet + 1) / 2 THEN toplam_tutar END)
+            ELSE
+                0.5 * (
+                    MAX(CASE WHEN sira = adet / 2 THEN toplam_tutar END) +
+                    MAX(CASE WHEN sira = adet / 2 + 1 THEN toplam_tutar END)
+                )
+        END,
+        2
+    ) AS medyan
+FROM sirali
+GROUP BY sehir, adet
+HAVING adet >= 2
+ORDER BY medyan DESC, sehir ASC;

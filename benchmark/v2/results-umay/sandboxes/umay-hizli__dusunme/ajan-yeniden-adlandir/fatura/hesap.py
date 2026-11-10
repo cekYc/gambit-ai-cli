@@ -1,7 +1,5 @@
 """KDV hesapları."""
 
-import warnings
-
 
 def kdv_hesapla(tutar, oran=0.20):
     """Tutarın KDV'sini döndürür (kuruşa yuvarlanmış)."""
@@ -10,8 +8,9 @@ def kdv_hesapla(tutar, oran=0.20):
 
 def hesapKdv(tutar, oran=0.20):
     """Tutarın KDV'sini döndürür (kuruşa yuvarlanmış)."""
+    import warnings
     warnings.warn(
-        "hesapKdv is deprecated; use kdv_hesapla instead",
+        "hesapKdv kullanımı kaldırılmıştır; kdv_hesapla kullanın.",
         DeprecationWarning,
         stacklevel=2,
     )
@@ -20,9 +19,9 @@ def hesapKdv(tutar, oran=0.20):
 
 def hesapKdvDahil(tutar, oran=0.20):
     """KDV dahil tutarı döndürür."""
-    return round(tutar + hesapKdv(tutar, oran), 2)
+    return round(tutar + kdv_hesapla(tutar, oran), 2)
 
 
 def toplam_tutar(kalemler):
     """[(fiyat, adet, kdv_orani), ...] listesinin KDV dahil toplamı."""
-    return round(sum(f * a + hesapKdv(f * a, o) for f, a, o in kalemler), 2)
+    return round(sum(f * a + kdv_hesapla(f * a, o) for f, a, o in kalemler), 2)

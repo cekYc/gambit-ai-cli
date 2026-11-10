@@ -1,33 +1,44 @@
-WITH iade_toplam AS (
-    SELECT siparis_id, urun_id, SUM(adet) AS iade_adet
-    FROM iadeler
-    GROUP BY siparis_id, urun_id
-),
-kalem_net AS (
+WITH satis_ozeti AS (
     SELECT 
         sk.urun_id,
-        sk.siparis_id,
-        sk.adet,
-        sk.birim_fiyat,
-        COALESCE(it.iade_adet, 0) AS iade_adet,
-        (sk.adet - COALESCE(it.iade_adet, 0)) AS net_adet,
-        (sk.adet - COALESCE(it.iade_adet, 0)) * sk.birim_fiyat AS net_ciro
+        SUM(sk.adet) AS toplam_satilan
     FROM siparis_kalemleri sk
-    LEFT JOIN iade_toplam it ON sk.siparis_id = it.siparis_id AND sk.urun_id = it.urun_id
+    GROUP BY sk.urun_id
 ),
-urun_ozet AS (
+iade_ozeti AS (
     SELECT 
-        u.ad AS urun_adi,
-        SUM(kn.net_adet) AS net_adet,
-        SUM(kn.net_ciro) AS net_ciro
-    FROM kalem_net kn
-    JOIN urunler u ON kn.urun_id = u.id
-    GROUP BY u.id, u.ad
+        i.urun_id,
+        SUM(i.adet) AS toplam_iade
+    FROM iadeler i
+    GROUP BY i.urun_id
+),
+siparis_iade_detay AS (
+    SELECT 
+        sk.siparis_id,
+        sk.urun_id,
+        sk.adet AS satilan_adet,
+        sk.birim_fiyat,
+        COALESCE(SUM(i.adet), 0) AS iade_adet
+    FROM siparis_kalemleri sk
+    LEFT JOIN iadeler i 
+        ON i.siparis_id = sk.siparis_id 
+       AND i.urun_id = sk.urun_id
+    GROUP BY sk.siparis_id, sk.urun_id
+),
+net_ciro_hesap AS (
+    SELECT 
+        urun_id,
+        SUM((satilan_adet - iade_adet) * birim_fiyat) AS net_ciro
+    FROM siparis_iade_detay
+    GROUP BY urun_id
 )
 SELECT 
-    urun_adi,
-    net_adet,
-    ROUND(net_ciro, 2) AS net_ciro
-FROM urun_ozet
+    u.ad AS urun_adi,
+    COALESCE(so.toplam_satilan, 0) - COALESCE(io.toplam_iade, 0) AS net_adet,
+    ROUND(COALESCE(nch.net_ciro, 0), 2) AS net_ciro
+FROM urunler u
+LEFT JOIN satis_ozeti so ON u.id = so.urun_id
+LEFT JOIN iade_ozeti io ON u.id = io.urun_id
+LEFT JOIN net_ciro_hesap nch ON u.id = nch.urun_id
 ORDER BY net_ciro DESC, urun_adi ASC
 LIMIT 5;

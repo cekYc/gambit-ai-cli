@@ -1,28 +1,29 @@
-WITH iade_toplamlari AS (
-    SELECT siparis_id, urun_id, SUM(adet) AS iade_adet
-    FROM iadeler
-    GROUP BY siparis_id, urun_id
+WITH iade_urun_toplam AS (
+  SELECT urun_id, SUM(adet) AS iade_toplam
+  FROM iadeler
+  GROUP BY urun_id
 ),
-kalem_net AS (
-    SELECT sk.siparis_id, sk.urun_id,
-           sk.adet - COALESCE(it.iade_adet, 0) AS net_adet_kalem,
-           (sk.adet - COALESCE(it.iade_adet, 0)) * sk.birim_fiyat AS net_ciro_kalem
-    FROM siparis_kalemleri sk
-    LEFT JOIN iade_toplamlari it
-      ON it.siparis_id = sk.siparis_id
-     AND it.urun_id = sk.urun_id
+iade_kalem_toplam AS (
+  SELECT siparis_id, urun_id, SUM(adet) AS iade_adet
+  FROM iadeler
+  GROUP BY siparis_id, urun_id
 ),
 urun_ozet AS (
-    SELECT kn.urun_id,
-           SUM(kn.net_adet_kalem) AS net_adet,
-           SUM(kn.net_ciro_kalem) AS net_ciro
-    FROM kalem_net kn
-    GROUP BY kn.urun_id
+  SELECT u.id AS urun_id,
+         u.ad AS urun_adi,
+         SUM(sk.adet) AS satilan_toplam,
+         COALESCE(iu.iade_toplam, 0) AS iade_toplam,
+         SUM(sk.adet) - COALESCE(iu.iade_toplam, 0) AS net_adet,
+         SUM((sk.adet - COALESCE(ik.iade_adet, 0)) * sk.birim_fiyat) AS net_ciro
+  FROM urunler u
+  JOIN siparis_kalemleri sk ON sk.urun_id = u.id
+  LEFT JOIN iade_urun_toplam iu ON iu.urun_id = u.id
+  LEFT JOIN iade_kalem_toplam ik ON ik.siparis_id = sk.siparis_id AND ik.urun_id = sk.urun_id
+  GROUP BY u.id, u.ad
 )
-SELECT u.ad AS urun_adi,
-       uo.net_adet,
-       printf('%.2f', uo.net_ciro) AS net_ciro
-FROM urun_ozet uo
-JOIN urunler u ON u.id = uo.urun_id
-ORDER BY uo.net_ciro DESC, u.ad ASC
+SELECT urun_adi,
+       net_adet,
+       printf('%.2f', net_ciro) AS net_ciro
+FROM urun_ozet
+ORDER BY net_ciro DESC, urun_adi ASC
 LIMIT 5;

@@ -9,13 +9,9 @@ def kdv_hesapla(tutar, oran=0.20):
 
 
 def hesapKdv(tutar, oran=0.20):
-    """Tutarın KDV'sini döndürür (kuruşa yuvarlanmış).
-
-    .. deprecated:: 2.0
-       `kdv_hesapla` kullanın.
-    """
+    """Tutarın KDV'sini döndürür (kuruşa yuvarlanmış)."""
     warnings.warn(
-        "hesapKdv kullanımı önerilmez, kdv_hesapla kullanın.",
+        "hesapKdv kullanımı önerilmez, yerine kdv_hesapla kullanın.",
         DeprecationWarning,
         stacklevel=2
     )

@@ -1,8 +1,8 @@
 WITH siparis_tutarlari AS (
     SELECT 
         m.sehir,
-        s.id as siparis_id,
-        SUM(sk.adet * sk.birim_fiyat) as tutar
+        s.id AS siparis_id,
+        SUM(sk.adet * sk.birim_fiyat) AS tutar
     FROM siparisler s
     JOIN musteriler m ON s.musteri_id = m.id
     JOIN siparis_kalemleri sk ON s.id = sk.siparis_id
@@ -11,37 +11,33 @@ WITH siparis_tutarlari AS (
 sehir_siparis_sayilari AS (
     SELECT 
         sehir,
-        COUNT(*) as siparis_sayisi
+        COUNT(*) AS siparis_sayisi
     FROM siparis_tutarlari
     GROUP BY sehir
     HAVING COUNT(*) >= 2
 ),
-siralanmis_tutalar AS (
+medyan_hesaplama AS (
     SELECT 
         st.sehir,
         st.tutar,
-        ROW_NUMBER() OVER (PARTITION BY st.sehir ORDER BY st.tutar) as rn,
-        COUNT(*) OVER (PARTITION BY st.sehir) as cnt
+        ROW_NUMBER() OVER (PARTITION BY st.sehir ORDER BY st.tutar) AS rn,
+        COUNT(*) OVER (PARTITION BY st.sehir) AS cnt
     FROM siparis_tutarlari st
     JOIN sehir_siparis_sayilari sss ON st.sehir = sss.sehir
-),
-medyan_hesapla AS (
-    SELECT 
-        sehir,
-        CASE 
-            WHEN cnt % 2 = 1 THEN 
-                MAX(CASE WHEN rn = (cnt + 1) / 2 THEN tutar END)
-            ELSE 
-                (MAX(CASE WHEN rn = cnt / 2 THEN tutar END) + 
-                 MAX(CASE WHEN rn = cnt / 2 + 1 THEN tutar END)) / 2.0
-        END as medyan
-    FROM siralanmis_tutalar
-    GROUP BY sehir, cnt
 )
 SELECT 
     mh.sehir,
     sss.siparis_sayisi,
-    ROUND(mh.medyan, 2) as medyan
-FROM medyan_hesapla mh
+    ROUND(
+        CASE 
+            WHEN mh.cnt % 2 = 1 THEN
+                MAX(CASE WHEN mh.rn = (mh.cnt + 1) / 2 THEN mh.tutar END)
+            ELSE
+                (MAX(CASE WHEN mh.rn = mh.cnt / 2 THEN mh.tutar END) +
+                 MAX(CASE WHEN mh.rn = mh.cnt / 2 + 1 THEN mh.tutar END)) / 2.0
+        END, 2
+    ) AS medyan
+FROM medyan_hesaplama mh
 JOIN sehir_siparis_sayilari sss ON mh.sehir = sss.sehir
-ORDER BY mh.medyan DESC, mh.sehir ASC;
+GROUP BY mh.sehir, sss.siparis_sayisi
+ORDER BY medyan DESC, mh.sehir ASC;

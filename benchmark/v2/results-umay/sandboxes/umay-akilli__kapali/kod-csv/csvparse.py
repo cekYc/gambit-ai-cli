@@ -1,109 +1,105 @@
 def parse_csv(text: str, delimiter: str = ",") -> list[list[str]]:
     """
-    CSV metnini parse eder. `csv` modülü kullanılmaz.
+    CSV metnini parse eder. Standart csv modülü kullanmadan.
     
     Kurallar:
     - Kayıtlar \n ya da \r\n ile ayrılır. Metnin sonundaki tek satır sonu yeni bir kayıt oluşturmaz.
-    - Boş metin [] döndürür.
-    - Ortadaki boş bir satır tek boş alanlı kayıttır: [""]
+    - Boş metin [] döndürür. Ortadaki boş bir satır tek boş alanlı kayıttır: [""]
     - Çift tırnakla başlayan bir alan ayırıcı, satır sonu ve "" (tek \" olarak) içerebilir; tırnaklar alana dahil değildir.
     - Tırnaksız alanlar olduğu gibi alınır (boşluklar korunur); tırnaksız alanın ortasındaki \" sıradan karakterdir.
     - Hatalı girdide ValueError fırlat: kapanan tırnaktan hemen sonra ayırıcı/satır sonu dışında bir karakter
-      (ör. \"ab\"c) ya da hiç kapanmayan tırnak.
+      (ör. `\"ab\"c`) ya da hiç kapanmayan tırnak.
     """
     if not text:
         return []
     
+    # Satırları ayır - \r\n ve \n ikisini de destekle
+    lines = text.splitlines()
+    
     records = []
-    fields = []
-    field_chars = []
-    
     i = 0
-    n = len(text)
-    in_quoted = False
-    
-    while i < n:
-        ch = text[i]
+    while i < len(lines):
+        line = lines[i]
+        fields = []
+        field_start = 0
+        pos = 0
         
-        if in_quoted:
-            if ch == '"':
-                # Kapanış tırnağı mı escaped tırnak mı?
-                if i + 1 < n and text[i + 1] == '"':
-                    # Escaped tırnak: "" -> "
-                    field_chars.append('"')
-                    i += 2
-                else:
-                    # Kapanış tırnağı
-                    in_quoted = False
-                    i += 1
-                    # Kapanış tırnağından hemen sonra: ayırıcı, satır sonu, veya metin sonu beklenir
-                    if i < n:
-                        next_ch = text[i]
-                        if next_ch != delimiter and next_ch != '\n' and next_ch != '\r':
-                            raise ValueError(f"Kapanan tırnaktan sonra ayırıcı veya satır sonu bekleniyordu, '{next_ch}' bulundu")
-            else:
-                field_chars.append(ch)
-                i += 1
-        else:
-            # Tırnak dışında
-            if ch == '"':
-                # Tırnaklı alan başlangıcı - alan başında olmalı
-                if field_chars:
-                    # Tırnak alan ortasında -> tırnaksız alanda tırnak sıradan karakter
-                    field_chars.append(ch)
-                    i += 1
-                else:
-                    in_quoted = True
-                    i += 1
-            elif ch == delimiter:
-                # Alan ayırıcı
-                fields.append(''.join(field_chars))
+        while pos < len(line):
+            if line[pos] == '"':
+                # Tırnaklı alan - sadece alan başlangıcında geçerli
+                if pos != field_start:
+                    # Tırnak alan başında değilse sıradan karakter olarak işle
+                    pos += 1
+                    continue
+                
+                pos += 1  # Başlangıç tırnağını atla
                 field_chars = []
-                i += 1
-            elif ch == '\n':
-                # Satır sonu (LF)
-                fields.append(''.join(field_chars))
-                field_chars = []
-                records.append(fields)
-                fields = []
-                i += 1
-            elif ch == '\r':
-                # CR - CRLF olabilir
-                if i + 1 < n and text[i + 1] == '\n':
-                    # CRLF
-                    fields.append(''.join(field_chars))
-                    field_chars = []
-                    records.append(fields)
-                    fields = []
-                    i += 2
+                
+                while pos < len(line):
+                    if line[pos] == '"':
+                        if pos + 1 < len(line) and line[pos + 1] == '"':
+                            # Kaçış tırnağı: "" -> "
+                            field_chars.append('"')
+                            pos += 2
+                        else:
+                            # Kapanış tırnağı
+                            pos += 1
+                            break
+                    else:
+                        field_chars.append(line[pos])
+                        pos += 1
                 else:
-                    # Yalnız CR - satır sonu say
-                    fields.append(''.join(field_chars))
-                    field_chars = []
-                    records.append(fields)
-                    fields = []
+                    # Satır bitti ama tırnak kapanmadı - çok satırlı alan olabilir
+                    # Sonraki satırları da oku
+                    field_chars.append('\n')
                     i += 1
+                    while i < len(lines):
+                        line = lines[i]
+                        pos = 0
+                        while pos < len(line):
+                            if line[pos] == '"':
+                                if pos + 1 < len(line) and line[pos + 1] == '"':
+                                    field_chars.append('"')
+                                    pos += 2
+                                else:
+                                    # Kapanış tırnağı bulundu
+                                    pos += 1
+                                    break
+                            else:
+                                field_chars.append(line[pos])
+                                pos += 1
+                        else:
+                            # Bu satırda da kapanış yok, satır sonu ekle ve devam et
+                            field_chars.append('\n')
+                            i += 1
+                            continue
+                        break
+                    else:
+                        # Tüm satırlar bitti ama tırnak kapanmadı
+                        raise ValueError("Unterminated quoted field")
+                
+                # Kapanış tırnağından sonra ayırıcı veya satır sonu gelmeli
+                if pos < len(line):
+                    if line[pos] == delimiter:
+                        pos += 1
+                        field_start = pos
+                    elif line[pos] != '"':  # "" durumu yukarıda handle edildi
+                        raise ValueError(f"Invalid character after closing quote at position {pos} in line {i}")
+                
+                fields.append(''.join(field_chars))
+            elif line[pos] == delimiter:
+                # Tırnaksız alan
+                fields.append(line[field_start:pos])
+                pos += 1
+                field_start = pos
             else:
-                field_chars.append(ch)
-                i += 1
-    
-    # Metin bitti
-    # Eğer in_quoted hala True ise -> kapanmayan tırnak hatası
-    if in_quoted:
-        raise ValueError("Kapanmayan tırnak")
-    
-    # Son alanı ekle
-    fields.append(''.join(field_chars))
-    
-    # Trailing newline kontrolü: eğer text \n veya \r\n ile bitiyorsa VE fields sadece [''] ise
-    # ve records boş değilse -> bu trailing newline'dan kaynaklı boş kayıttır, ekleme
-    ends_with_newline = text.endswith('\n') or text.endswith('\r\n')
-    is_empty_record = (len(fields) == 1 and fields[0] == '')
-    
-    if not (ends_with_newline and is_empty_record and records):
+                pos += 1
+        
+        # Satır sonundaki son alan
+        if field_start <= len(line):
+            fields.append(line[field_start:])
+        
         records.append(fields)
-    elif not records and is_empty_record:
-        # Sadece trailing newline varsa ve hiç kayıt yoksa -> boş metin gibi davran
-        pass
+        i += 1
     
     return records

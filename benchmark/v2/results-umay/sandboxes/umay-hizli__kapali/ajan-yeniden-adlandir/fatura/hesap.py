@@ -1,5 +1,7 @@
 """KDV hesapları."""
 
+import warnings
+
 
 def kdv_hesapla(tutar, oran=0.20):
     """Tutarın KDV'sini döndürür (kuruşa yuvarlanmış)."""
@@ -7,13 +9,9 @@ def kdv_hesapla(tutar, oran=0.20):
 
 
 def hesapKdv(tutar, oran=0.20):
-    """Tutarın KDV'sini döndürür (kuruşa yuvarlanmış).
-
-    Eski isim; ``kdv_hesapla`` kullanın. Bu ad gelecek sürümde kaldırılabilir.
-    """
-    import warnings
+    """Eski ad: tutarın KDV'sini döndürür (kuruşa yuvarlanmış)."""
     warnings.warn(
-        "hesapKdv kullanımdan kaldırıldı, kdv_hesapla kullanın",
+        "hesapKdv kullanımı calistirildi, kdv_hesapla kullanin",
         DeprecationWarning,
         stacklevel=2,
     )

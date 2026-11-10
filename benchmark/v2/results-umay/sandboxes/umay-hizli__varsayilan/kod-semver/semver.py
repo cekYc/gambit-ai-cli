@@ -1,102 +1,91 @@
-"""Semantic Versioning 2.0.0 kiyaslama ve sirala ma.
-
-Yalnca standart kitaplik kullanilir.
-"""
-
 from __future__ import annotations
 
 import re
-from functools import cmp_to_key
+
+_PRE_ID = re.compile(r"(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)")
 
 _VERSION_RE = re.compile(
-    r"^v?(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)"
-    r"(?:-(?P<pre>[^+]*))?"
-    r"(?:\+(?P<build>.+))?$"
+    r"^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+    r"(?:-(" + _PRE_ID.pattern + r"(?:\.+" + _PRE_ID.pattern + r")*))?"
+    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
 )
 
-_IDENT_RE = re.compile(r"[A-Za-z0-9-]+")
+
+def _pre_key(pre):
+    """Sıralama için güvenli ön-sürüm anahtarı (None en yüksek)."""
+    if pre is None:
+        return (1,)
+    return (0,) + pre
 
 
-def _split_identifiers(part):
-    """Nokta ile ayrilmis tanimlayici listesini dondurur; yoksa None."""
-    if part is None:
-        return None
-    ids = part.split(".")
-    for ident in ids:
-        if ident == "":
-            raise ValueError(f"Bos surum tanimlayicisi: {part!r}")
-        if not _IDENT_RE.fullmatch(ident):
-            raise ValueError(f"Gecersiz surum tanimlayicisi: {ident!r}")
-    return ids
-
-
-def _parse(version):
+def _parse_version(version: str):
     if not isinstance(version, str):
-        raise ValueError(f"Surum metni olmalidir: {version!r}")
-    m = _VERSION_RE.fullmatch(version)
-    if m is None:
-        raise ValueError(f"Gecersiz surum: {version!r}")
+        raise ValueError(f"Geçersiz sürüm: {version!r}")
 
-    major = int(m.group("major"))
-    minor = int(m.group("minor"))
-    patch = int(m.group("patch"))
+    match = _VERSION_RE.match(version.strip())
+    if not match:
+        raise ValueError(f"Geçersiz sürüm: {version!r}")
 
-    for val in (m.group("major"), m.group("minor"), m.group("patch")):
-        if len(val) > 1 and val[0] == "0":
-            raise ValueError(f"Bastaki sifirli sayi: {version!r}")
+    major = int(match.group(1))
+    minor = int(match.group(2))
+    patch = int(match.group(3))
+    pre_raw = match.group(4)
 
-    pre = _split_identifiers(m.group("pre"))
-    if pre is not None:
-        for ident in pre:
-            if ident.isdigit() and len(ident) > 1 and ident[0] == "0":
-                raise ValueError(f"Bastaki sifirli on surum tanimlayicisi: {version!r}")
-
-    _split_identifiers(m.group("build"))
+    if pre_raw is None:
+        pre = None
+    else:
+        pre = []
+        for ident in pre_raw.split("."):
+            if ident.isdigit():
+                pre.append((0, int(ident)))
+            else:
+                pre.append((1, ident))
+        pre = tuple(pre)
 
     return (major, minor, patch, pre)
 
 
-def _cmp_pre(a, b):
-    if a is None and b is None:
+def _compare_pre(pre_a, pre_b) -> int:
+    if pre_a is None and pre_b is None:
         return 0
-    if a is None:
+    if pre_a is None:
         return 1
-    if b is None:
+    if pre_b is None:
         return -1
-    for x, y in zip(a, b):
-        x_digit = x.isdigit()
-        y_digit = y.isdigit()
-        if x_digit and y_digit:
-            xi = int(x)
-            yi = int(y)
-            if xi < yi:
-                return -1
-            if xi > yi:
-                return 1
-        elif x_digit != y_digit:
-            return -1 if x_digit else 1
-        else:
-            if x < y:
-                return -1
-            if x > y:
-                return 1
-    if len(a) < len(b):
+
+    for ident_a, ident_b in zip(pre_a, pre_b):
+        if ident_a < ident_b:
+            return -1
+        if ident_a > ident_b:
+            return 1
+
+    if len(pre_a) < len(pre_b):
         return -1
-    if len(a) > len(b):
+    if len(pre_a) > len(pre_b):
         return 1
     return 0
 
 
 def compare(a: str, b: str) -> int:
-    pa = _parse(a)
-    pb = _parse(b)
-    for xa, xb in zip(pa[:3], pb[:3]):
-        if xa < xb:
+    major_a, minor_a, patch_a, pre_a = _parse_version(a)
+    major_b, minor_b, patch_b, pre_b = _parse_version(b)
+
+    if (major_a, minor_a, patch_a) != (major_b, minor_b, patch_b):
+        if (major_a, minor_a, patch_a) < (major_b, minor_b, patch_b):
             return -1
-        if xa > xb:
-            return 1
-    return _cmp_pre(pa[3], pb[3])
+        return 1
+
+    return _compare_pre(pre_a, pre_b)
 
 
 def sort_versions(versions: list[str]) -> list[str]:
-    return sorted(versions, key=cmp_to_key(compare))
+    if not isinstance(versions, list):
+        raise ValueError("versions bir liste olmalıdır")
+
+    parsed = []
+    for item in versions:
+        major, minor, patch, pre = _parse_version(item)
+        parsed.append(((major, minor, patch, _pre_key(pre)), item))
+
+    parsed.sort(key=lambda x: x[0])
+    return [item for _, item in parsed]
