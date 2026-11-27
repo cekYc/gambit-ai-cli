@@ -4,14 +4,13 @@ Modeller ekranda config.json'daki hazır ayar adlarıyla (pawn, knight, bishop, 
 modeli boş ("model": "") bir hazır ayar, ileride doldurulacak boş yuvadır."""
 
 import argparse
+import base64
 import json
 import math
 import os
 import platform
 import queue
 import re
-import shutil
-import subprocess
 import sys
 import threading
 import time
@@ -51,6 +50,8 @@ from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
 
+import lmstudio
+import servers
 import tools
 
 HERE = Path(__file__).resolve().parent
@@ -75,14 +76,6 @@ CLAIMED_WORK = re.compile(
     r"\b(?:has been|have been|was|were) (?:created|saved|written|updated)\b", re.I)
 FILE_MENTION = re.compile(
     r"(?<![\w/\\.-])[\w-][\w./\\-]*\.(?:py|js|mjs|cjs|ts|sql|ps1|sh|json|md|html|css|txt|csv|ini|ya?ml|toml)\b")
-# Otomatik düşünme modunda düşünmeyi açan soru kalıpları: kodun ne yaptığını, nedenini soran analiz soruları
-ANALYSIS_QUESTION = re.compile(
-    r"\bne (?:yazdır|döndür|yap|üret|çıkar)|çıktı(?:s[ıi])? ne|\bneden\b|\bniçin\b|\bniye\b|açıkla|analiz|"
-    r"karşılaştır|nasıl çalış|hangisi daha|ne olur\b|ne fark|\bwhy\b|\bexplain\b|what does|what is the output|\bcompare\b",
-    re.I)
-# Dosya yazdıran/değiştirten istekler: bunlarda düşünme yalnızca planlama adımında ve bir şey ters gidince açılır
-ACTION_REQUEST = re.compile(r"\b(?:yaz(?!dır)|oluştur|kaydet|düzelt|düzenle|güncelle|ekle|değiştir|uygula|write|create|"
-                            r"fix|implement|add|update|refactor|rename)\w*", re.I)
 PY_INLINE = re.compile(r"\bpy(?:thon\d*)?(?:\.exe)?\s+(?:-\S+\s+)*-c\b", re.I)
 NOT_FOUND = re.compile(r"['‘]([^'’\n]+)['’] (?:terimi bir cmdlet|is not recognized as)|(?:^|\s)([\w.-]+): (?:command )?not found",
                        re.M)
@@ -115,14 +108,17 @@ LOGO = [
 
 COMMANDS = {
     "/help": "Komutları gösterir",
-    "/model": "Modelleri listeler; /model <ad> ile yüklü olana geçer",
-    "/load": "Modeli kendi ayarlarıyla yükler, ör. /load queen (diğer modelleri boşaltır)",
+    "/model": "Modelleri listeler (diskte olmayanlar ayrı); /model <ad> ile yüklü olana geçer",
+    "/load": "Modeli kendi ayarlarıyla yükler, ör. /load queen (diğer modelleri boşaltır, RAM'i gözetler)",
+    "/fit": "Modelin belleğe sığıp sığmadığını hesaplar, GPU oranı ve bağlam önerir; ör. /fit rook",
+    "/vision": "Görsel modu açar/kapatır: model görsel ekiyle (ya da eksiz) kendi ayarıyla yeniden yüklenir",
+    "/image": "Sonraki mesaja resim ekler, ör. /image ekran.png (görsel modda); /image yalnız: eklenenleri siler",
     "/unload": "Yüklü tüm modelleri boşaltır",
     "/clear": "Yeni sohbet başlatır",
     "/undo": "Modelin yaptığı son dosya değişikliğini geri alır",
     "/compact": "Eski araç çıktılarını kısaltıp bağlamda yer açar",
     "/tools": "Araçları açar/kapatır",
-    "/think": "Düşünmeyi açar/kapatır; /think on, off ya da auto (otomatik)",
+    "/think": "Düşünmeyi açar/kapatır ya da düzeyini seçer: /think off, on, low, medium, high, xhigh",
     "/show": "Düşünme metnini ekranda gösterir/gizler",
     "/auto": "Onay sormayı açar/kapatır (dikkatli kullan)",
     "/exit": "Çıkış (Ctrl+D de olur)",
@@ -130,8 +126,11 @@ COMMANDS = {
 
 
 def load_config() -> dict:
+    """config.json; hazır ayarlar diskteki modellerle eşleştirilmiş olarak (bkz. lmstudio.resolve_presets)."""
     with open(HERE / "config.json", encoding="utf-8") as f:
-        return json.load(f)
+        cfg = json.load(f)
+    lmstudio.resolve_presets(cfg, lmstudio.catalog(cfg))
+    return cfg
 
 
 def _get_json(url: str) -> dict:
@@ -155,23 +154,30 @@ def server_models(base_url: str) -> list[dict] | None:
         return None
 
 
-def lms_path(cfg: dict) -> str | None:
-    configured = Path(os.path.expanduser(cfg.get("lms_path") or ""))
-    return str(configured) if cfg.get("lms_path") and configured.is_file() else shutil.which("lms")
+lms_path = lmstudio.lms_path  # benchmark betikleri ai.lms_path'i kullanıyor
+
+
+def is_local(base_url: str) -> bool:
+    return "localhost" in base_url or "127.0.0.1" in base_url
 
 
 def ensure_server(cfg: dict, base_url: str) -> list[dict] | None:
     models = server_models(base_url)
-    if models is None and ("localhost" in base_url or "127.0.0.1" in base_url) and lms_path(cfg):
+    if models is None and is_local(base_url) and lms_path(cfg):
         with console.status(Text("LM Studio sunucusu kapalı, başlatılıyor…", style=MUTED), spinner="dots"):
-            subprocess.run([lms_path(cfg), "server", "start"], capture_output=True)
+            lmstudio.run(cfg, "server", "start", timeout=120)
             models = server_models(base_url)
     return models
 
 
-def analysis_question(text: str) -> bool:
-    """Otomatik düşünme modunda bu mesaj düşünerek cevaplanmalı mı (kodun ne yaptığı, neden, açıklama...)."""
-    return bool(ANALYSIS_QUESTION.search(text))
+def initial_effort(cfg: dict, args: argparse.Namespace) -> str:
+    """Başlangıç düşünme düzeyi: --effort, --think/--no-think, config.json'daki "effort" (eski "thinking" de olur)."""
+    if getattr(args, "effort", None):
+        return str(args.effort).lower()
+    if getattr(args, "think", None) is not None:
+        return "on" if args.think else "off"
+    value = cfg.get("effort", cfg.get("thinking", "off"))
+    return {True: "on", False: "off", "auto": "off"}.get(value, str(value).lower())  # otomatik mod kaldırıldı
 
 
 def command_failed(result: str) -> bool:
@@ -198,7 +204,35 @@ def alias_of(cfg: dict, model: str | None) -> str:
     """Ekranda gösterilecek ad: modelin hazır ayar adı (bishop, queen...). Model kimlikleri gösterilmez."""
     if not model:
         return "model yok"
-    return next((k for k, p in cfg.get("presets", {}).items() if p.get("model") == model), "tanımsız model")
+    return next((k for k, p in cfg.get("presets", {}).items()
+                 if model in (p.get("model"), (p.get("vision") or {}).get("model"))
+                 or (p.get("server") and model == servers.alias(k))), "tanımsız model")
+
+
+def all_models(base_url: str) -> list[dict] | None:
+    """LM Studio'daki modeller ve Gambit'in başlattığı sunucular (ik_llama.cpp) birlikte; LM Studio'ya ulaşılamazsa None."""
+    models = server_models(base_url)
+    return None if models is None else models + servers.running()
+
+
+IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp",
+               ".gif": "image/gif", ".bmp": "image/bmp"}
+MAX_IMAGE_BYTES = 10_000_000
+IMAGE_CHARS = 2500  # bağlam tahmininde bir resmin kapladığı yer (~800 token)
+
+
+def image_part(path: str) -> dict:
+    """Resim dosyasını mesaja eklenecek OpenAI biçimli parçaya çevirir (data: URL). Sorun varsa ValueError."""
+    p = Path(os.path.expanduser(path))
+    mime = IMAGE_TYPES.get(p.suffix.lower())
+    if not p.is_file():
+        raise ValueError(f"dosya bulunamadı: {path}")
+    if not mime:
+        raise ValueError(f"desteklenmeyen resim türü: {p.suffix or 'uzantısız'} ({', '.join(IMAGE_TYPES)})")
+    if p.stat().st_size > MAX_IMAGE_BYTES:
+        raise ValueError(f"resim çok büyük ({p.stat().st_size // 1_000_000} MB, sınır 10 MB)")
+    data = base64.b64encode(p.read_bytes()).decode("ascii")
+    return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}, "_name": p.name}
 
 
 def _one_line(text: str, limit: int = 100) -> str:
@@ -306,7 +340,11 @@ def _repair_json(raw: str) -> str | None:
 def _chars(messages: list[dict]) -> int:
     total = 0
     for m in messages:
-        total += len(m.get("content") or "") + 8
+        content = m.get("content") or ""
+        if isinstance(content, list):  # resimli kullanıcı mesajı
+            total += sum(len(c.get("text", "")) if c.get("type") == "text" else IMAGE_CHARS for c in content) + 8
+        else:
+            total += len(content) + 8
         for c in m.get("tool_calls") or []:
             total += len(c["function"]["arguments"]) + len(c["function"]["name"]) + 24
     return total
@@ -595,9 +633,7 @@ class Turn:
     nudges: int = 0
     broken_retries: int = 0
     empty_retry: bool = False
-    think_all: bool = False  # bu tur her adımda düşün (otomatik mod, analiz sorusu)
     think_rest: bool = False  # boş cevaptan sonra turun geri kalanında düşün
-    think_next: int = 0  # sonraki şu kadar adımda düşün
     no_think_next: bool = False  # düşünme bütçesi aşıldı: sonraki adım düşünmeden
     force_compact: bool = False
     failed_commands: dict = field(default_factory=dict)  # başarısız komut -> (o andaki changes, hata satırı)
@@ -613,19 +649,20 @@ class Turn:
 class Chat:
     def __init__(self, client: OpenAI, cfg: dict, base_url: str, args: argparse.Namespace):
         self.client = client
+        self._clients: dict[str, OpenAI] = {}  # Gambit'in başlattığı sunucular için istemciler (adrese göre)
         self.cfg = cfg
         self.base_url = base_url
         self.model: str | None = None
         self.ctx: int | None = None  # modelin yüklü bağlam uzunluğu
         self.use_tools = not args.no_tools
-        if getattr(args, "auto_think", False):
-            mode = "auto"
-        elif args.think is not None:
-            mode = "on" if args.think else "off"
-        else:
-            mode = {True: "on", False: "off"}.get(cfg.get("thinking", True), str(cfg.get("thinking")))
-        self.set_think_mode(mode if mode in ("on", "off", "auto") else "on")
-        self.escalations = 0  # otomatik modda doğrulama başarısız olduğu için düşünmenin açıldığı adım sayısı
+        self.reasoning: dict[str, tuple[list[str], str]] = {}  # LM Studio'nun bildirdiği düşünme düzeyleri
+        self.efforts, self.effort_default = ["off", "on"], "on"  # şu anki modelin düzeyleri
+        self.effort_pref = initial_effort(cfg, args)  # kullanıcının istediği düzey
+        self.effort = self.effort_pref  # bu modelde geçerli olan düzey (refresh_efforts ayarlar)
+        self.step_effort = self.effort  # bu adımda kullanılan düzey
+        self.refresh_efforts()
+        self.vision = bool(getattr(args, "vision", False) or getattr(args, "image", None))  # görsel mod
+        self.pending_images: list[dict] = []  # sonraki mesaja eklenecek resimler (/image)
         self.show_thinking = args.show_think or cfg.get("show_thinking", False)
         self.auto = args.yes
         self.animate = cfg.get("animations", True) and not getattr(args, "no_anim", False)
@@ -662,7 +699,8 @@ class Chat:
                                                                        if missing else ""),
                 (f"run_command uses {shell}: write PowerShell syntax, not bash. For any Python code (tests, data "
                  "processing, SQLite queries) use run_python instead of python -c, which breaks on PowerShell quoting."
-                 if tools.POWERSHELL else "For any Python code use run_python instead of python -c."),
+                 if tools.POWERSHELL else f"run_command uses {shell}. For any Python code use run_python instead of "
+                 "python -c."),
                 "Read a file before editing it. Use edit_file for small changes, write_file for new files or full rewrites.",
                 "When the user asks you to write or create a program, script or file, save it with write_file; do not "
                 "paste the whole file into the chat instead. If they also ask you to run it, run it.",
@@ -696,11 +734,29 @@ class Chat:
         """name: hazır ayar adı (queen) ya da adın başı (q); model kimliği de kabul edilir ama gösterilmez."""
         presets = self.cfg.get("presets", {})
         aliases = [k for k in presets if k == name.lower()] or [k for k in presets if k.startswith(name.lower())]
-        if len(aliases) == 1 and not presets[aliases[0]].get("model"):
+        if len(aliases) == 1 and lmstudio.is_empty_slot(presets[aliases[0]]):
             console.print(f"[yellow]{escape(aliases[0])} boş bir yuva; önce config.json'da ona bir model ata.[/]")
             return False
         if len(aliases) == 1:
-            model = presets[aliases[0]]["model"]
+            p = presets[aliases[0]]
+            if p.get("_disk", True) is None and not any(m["id"] == p.get("model") for m in models or []):
+                self._missing_note(aliases[0], p)
+                return False
+            v = lmstudio.vision_of(p)
+            loaded = {m["id"] for m in models or [] if m.get("state") == "loaded"}
+            if v and v["model"] in loaded and p["model"] not in loaded:
+                self.vision = True  # yüklü olan görsel model: görsel mod açık
+            elif p["model"] in loaded and not (v and v["model"] in loaded):
+                self.vision = False
+            if self.vision and not v:
+                self._note(f"{aliases[0]} modelinin görsel eki yok; görsel mod kapalı.", "yellow")
+                self.vision = False
+            model = v["model"] if self.vision and v else p["model"]
+            server_id = servers.alias(aliases[0])
+            if any(m["id"] == server_id for m in models or []):
+                self.vision, model = False, server_id  # metin modu sunucuda (ik_llama.cpp) yüklü
+            elif not self.vision and p.get("server") and servers.binary(p):
+                model = server_id
         elif any(m["id"] == name for m in models or []):
             model = name
         else:
@@ -711,10 +767,28 @@ class Chat:
         self.model = model
         self.ctx = info.get("loaded_context_length")
         self.messages[0]["content"] = self.system_prompt()
+        self.reasoning = lmstudio.reasoning_options(self.base_url)
+        self.refresh_efforts()
         if info and info.get("state") != "loaded":
             console.print("[yellow]Bu model yüklü değil; ilk mesajda LM Studio varsayılan ayarlarla yükler. "
                           f"Kendi ayarlarıyla yüklemek için: /load {alias_of(self.cfg, model)}[/]")
+        elif not info and model.startswith("gambit-") and not self.on_server():
+            console.print(f"[yellow]{escape(self.name())} yüklü değil; yüklemek için: /load {escape(self.name())}[/]")
         return True
+
+    def on_server(self) -> dict | None:
+        """Şu anki model Gambit'in başlattığı bir sunucudaysa onun kaydı ("_base_url" ile)."""
+        return next((m for m in servers.running() if m["id"] == self.model), None)
+
+    def _client(self) -> OpenAI:
+        """İsteğin gideceği sunucu: model Gambit'in başlattığı sunucudaysa o, değilse LM Studio."""
+        srv = self.on_server() if self.model and self.model.startswith("gambit-") else None
+        if not srv:
+            return self.client
+        url = srv["_base_url"]
+        if url not in self._clients:
+            self._clients[url] = OpenAI(base_url=url, api_key="gambit", timeout=3600, max_retries=0)
+        return self._clients[url]
 
     def name(self) -> str:
         return alias_of(self.cfg, self.model)
@@ -730,9 +804,58 @@ class Chat:
         return self.cfg.get("presets", {}).get(self.name(), {})
 
     def can_think(self) -> bool:
-        """Düşünme açılıp kapatılabiliyor mu: hazır ayarda "thinking": false (hiç düşünmez) ya da "always"
-        (her zaman düşünür, kapatılamaz) ise hayır."""
-        return self._preset().get("thinking", True) is True
+        """Düşünme açılıp kapatılabiliyor mu: model hem düşünmeden hem düşünerek çalışabiliyorsa."""
+        return "off" in self.efforts and len(self.efforts) > 1
+
+    def refresh_efforts(self) -> None:
+        """Modelin düşünme düzeylerini belirler: hazır ayardaki "efforts", yoksa LM Studio'nun bildirdiği, yoksa
+        açık/kapalı. Eski "thinking": false (düşünemez) ve "always" (kapatılamaz) ayarları da geçerli."""
+        p = self._preset()
+        opts, default = list(p["efforts"]) if p.get("efforts") else None, p.get("effort_default")
+        srv = p.get("server") or {}
+        if self.model and self.model == servers.alias(self.name()) and srv.get("efforts"):
+            opts, default = list(srv["efforts"]), srv.get("effort_default")  # sunucu düzeyi şablona doğrudan iletir
+        if opts is None and self.model in self.reasoning:
+            opts, default = self.reasoning[self.model]
+        opts = opts or ["off", "on"]
+        if p.get("thinking") is False:
+            opts = ["off"]
+        elif p.get("thinking") == "always":
+            opts = [o for o in opts if o != "off"] or ["on"]
+        self.efforts = opts
+        self.effort_default = default if default in opts else next((o for o in reversed(opts) if o != "off"), "off")
+        self.effort = self._resolve_effort(self.effort_pref)
+        self.step_effort = self.effort
+        self.thinking = self.effort != "off"
+
+    def _resolve_effort(self, want: str) -> str:
+        """İstenen düzeyin bu modeldeki karşılığı: varsa kendisi; "on" ya da modelde olmayan bir düzey modelin
+        varsayılanı; "off" kapatılamayan modelde en düşük düzey."""
+        if want in self.efforts:
+            return want
+        if want == "off":
+            return self.efforts[0]
+        return self.effort_default
+
+    def set_effort(self, arg: str) -> None:
+        """/think: düzeyi seçer; düzey verilmezse kapalı ile modelin varsayılanı arasında geçer."""
+        aliases = {"aç": "on", "ac": "on", "açık": "on", "kapat": "off", "kapalı": "off", "none": "off"}
+        want = (arg.lower() if arg.lower() in self.efforts else aliases.get(arg.lower(), arg.lower())) if arg else (
+            "on" if self.effort == self.efforts[0] else "off")
+        if want not in {"on", "off", *lmstudio.API_EFFORTS}:
+            console.print(f"[red]Bilinmeyen düzey: {escape(arg)}.[/] Bu modelde: {', '.join(self.efforts)}")
+            return
+        self.effort_pref = want
+        self.effort = self.step_effort = self._resolve_effort(want)
+        self.thinking = self.effort != "off"
+        note = f"Düşünme {self._effort_label(self.effort)}."
+        if want not in (self.effort, "on"):
+            note += f" Bu modelde '{want}' yok, en yakını seçildi."
+        self._note(note + f"  [düzeyler: {', '.join(self.efforts)}]")
+
+    @staticmethod
+    def _effort_label(level: str) -> str:
+        return {"off": "kapalı", "on": "açık"}.get(level, level)
 
     def tools_on(self) -> bool:
         """Araçlar bu turda gönderilir mi: /tools ile açık ve model araç çağırabiliyor ("tools": false değil)."""
@@ -743,24 +866,17 @@ class Chat:
 
     # --- sohbet / ajan döngüsü ---
 
-    def set_think_mode(self, mode: str) -> None:
-        """on / off / auto. auto: varsayılan kapalı; analiz sorularında ya da bir komut başarısız olunca açılır."""
-        self.think_mode = mode
-        self.thinking = mode == "on"
-
     def ask(self, text: str) -> None:
         if self.pending_note:
             text, self.pending_note = f"{self.pending_note}\n\n{text}", ""
         start = len(self.messages)
-        self.messages.append({"role": "user", "content": text})
+        if self.pending_images:
+            parts = [{k: v for k, v in img.items() if k != "_name"} for img in self.pending_images]
+            self.messages.append({"role": "user", "content": [{"type": "text", "text": text}, *parts]})
+            self.pending_images = []
+        else:
+            self.messages.append({"role": "user", "content": text})
         turn = self.turn = Turn(text, missing_files={m for m in FILE_MENTION.findall(text) if not Path(m).exists()})
-        if self.think_mode == "auto" and self.can_think() and analysis_question(text):
-            if ACTION_REQUEST.search(text):
-                turn.think_next = 1
-                self._note("Analiz gerektiren bir görev: planlama adımında düşünme açık.")
-            else:
-                turn.think_all = True
-                self._note("Analiz sorusu: bu tur düşünme açık.")
         limit = self.cfg.get("max_steps", 25)
         step = 0
         try:
@@ -778,7 +894,8 @@ class Chat:
                     calls = self._complete()
                 except _ThinkOverflow:
                     turn.no_think_next = True
-                    self._note(f"Düşünme {self._think_budget()} token sınırını aştı; bu adım düşünmeden tekrarlanıyor.",
+                    lowest = "düşünmeden" if self.efforts[0] == "off" else f"en düşük düzeyle ({self.efforts[0]})"
+                    self._note(f"Düşünme {self._think_budget()} token sınırını aştı; bu adım {lowest} tekrarlanıyor.",
                                "yellow")
                     continue
                 if not calls:
@@ -805,18 +922,27 @@ class Chat:
             if len(self.messages) == start + 1:
                 self.messages.pop()  # cevapsız kalan soruyu geçmişe bırakma
         finally:
-            self.thinking = self.think_mode == "on"  # turda geçici açılan düşünmeyi geri al
+            self.step_effort = self.effort  # turda geçici değişen düzeyi geri al
+            self.thinking = self.effort != "off"
 
     def _choose_thinking(self) -> None:
-        """Bu adımda düşünülsün mü: moda, analiz sorusuna ve son adımda ne olduğuna göre."""
+        """Bu adımda hangi düzeyle düşünülecek: seçilen düzey; düşünme bütçesi aşıldıysa bu adım düşünmeden, model
+        düşünmeden boş döndüyse turun geri kalanı modelin varsayılan düzeyiyle."""
         t = self.turn
+        level = self.effort
         if t.no_think_next:
-            self.thinking, t.no_think_next = False, False
-            return
-        base = {"on": True, "off": False}.get(self.think_mode, t.think_all)
-        self.thinking = base or t.think_rest or t.think_next > 0
-        if t.think_next:
-            t.think_next -= 1
+            t.no_think_next = False
+            level = self.efforts[0]  # en düşük düzey: kapalı ya da kapatılamayan modelde low
+        elif t.think_rest and level == "off":
+            level = self.effort_default
+        self.step_effort, self.thinking = level, level != "off"
+
+    def _api_effort(self) -> str | None:
+        """İstekteki reasoning_effort: kapalı "none", "on" modelin varsayılanı (gönderilmez), kademeli düzey kendisi."""
+        level = self.step_effort
+        if level == "off":
+            return "none" if self.can_think() else None
+        return level if level in lmstudio.API_EFFORTS else None
 
     def _think_budget(self) -> int:
         return int(self.cfg.get("think_budget", 6144) or 0)
@@ -958,10 +1084,6 @@ class Chat:
                 return ["It succeeded but printed nothing. If you expected output, the code never prints it (for "
                         "example a function whose result is not passed to print()); fix the code instead of rerunning it."]
             return []
-        if self.think_mode == "auto" and self.can_think() and not t.think_all:
-            t.think_next = 1
-            self.escalations += 1
-            self._note("Komut başarısız oldu: sonraki adımda düşünme açık.")
         code = str(args.get("command") or args.get("code") or "")
         hints = []
         if name == "run_command" and tools.POWERSHELL and PY_INLINE.search(code):
@@ -1079,8 +1201,8 @@ class Chat:
         }
         if self.tools_on():
             kwargs["tools"] = tools.schemas()
-        if not self.thinking and self.can_think():
-            kwargs["reasoning_effort"] = "none"  # LM Studio'da düşünmeyi gerçekten kapatan ayar
+        if effort := self._api_effort():
+            kwargs["reasoning_effort"] = effort  # "none" LM Studio'da düşünmeyi gerçekten kapatır
         if self.cfg.get("temperature") is not None:
             kwargs["temperature"] = self.cfg["temperature"]
 
@@ -1090,7 +1212,8 @@ class Chat:
         calls: dict[int, dict] = {}
         usage = None
         first = None
-        budget = self._think_budget() if self.thinking and self.can_think() else 0
+        # Bütçe yalnızca daha düşük bir düzeye inilebiliyorsa: aşılınca adım en düşük düzeyle tekrarlanır
+        budget = self._think_budget() if self.thinking and self.step_effort != self.efforts[0] else 0
         self.last_finish = None
         out.show_status("bağlam işleniyor")
         # Akış ayrı bir iş parçacığında okunur; böylece model bir süre hiçbir şey göndermediğinde (ör. LM Studio araç
@@ -1100,7 +1223,7 @@ class Chat:
 
         def pump() -> None:
             try:
-                holder["stream"] = self.client.chat.completions.create(**kwargs)
+                holder["stream"] = self._client().chat.completions.create(**kwargs)
                 for item in holder["stream"]:
                     chunks.put(item)
             except Exception as e:
@@ -1415,16 +1538,8 @@ class Chat:
                 self.use_tools = not self.use_tools
                 self.messages[0]["content"] = self.system_prompt()
                 self._note(f"Araçlar {'açık' if self.use_tools else 'kapalı'}.")
-            case "/think":
-                choices = {"on": "on", "aç": "on", "ac": "on", "off": "off", "kapat": "off",
-                           "auto": "auto", "otomatik": "auto"}
-                if arg and arg.lower() not in choices:
-                    console.print("[red]Kullanım: /think, /think on, /think off ya da /think auto[/]")
-                else:
-                    self.set_think_mode(choices[arg.lower()] if arg else ("off" if self.think_mode == "on" else "on"))
-                    self._note("Düşünme " + {"on": "açık.", "off": "kapalı.", "auto": (
-                        "otomatik: varsayılan kapalı; analiz sorularında ve bir komut başarısız olunca açılır."
-                    )}[self.think_mode])
+            case "/think" | "/effort":
+                self.set_effort(arg)
             case "/show":
                 self.show_thinking = not self.show_thinking
                 self._note(f"Düşünme metni {'gösteriliyor' if self.show_thinking else 'gizli'}.")
@@ -1434,8 +1549,8 @@ class Chat:
                     self._note("Onay sorulmayacak: model doğrudan dosya yazıp komut çalıştırabilir.", "yellow")
                 else:
                     self._note("Onay yeniden soruluyor.")
-            case "/model":
-                models = server_models(self.base_url)
+            case "/model" | "/models":
+                models = all_models(self.base_url)
                 if arg:
                     if self.set_model(arg, models):
                         self._note(f"Model: {self.name()}")
@@ -1443,35 +1558,159 @@ class Chat:
                     self.show_models(models)
             case "/load":
                 self.load_preset(arg)
+            case "/fit":
+                self.fit(arg)
+            case "/vision" | "/görsel":
+                self.toggle_vision(arg)
+            case "/image" | "/resim":
+                self.add_image(arg)
             case "/unload":
+                stopped = servers.stop_all()
                 if self._lms("unload", "--all"):
                     self.model, self.ctx = None, None
+                    if stopped:
+                        self._note(f"Sunucu kapatıldı: {', '.join(stopped)}")
             case _:
                 console.print(f"[red]Bilinmeyen komut: {escape(cmd)}[/] [dim](/help)[/]")
         return True
+
+    def _catalog(self) -> list[dict] | None:
+        """Diskteki modeller (yalnızca yerel LM Studio için) ve hazır ayarların onlarla yeniden eşleştirilmesi."""
+        cat = lmstudio.catalog(self.cfg) if is_local(self.base_url) else None
+        lmstudio.resolve_presets(self.cfg, cat)
+        return cat
+
+    def _missing_note(self, name: str, p: dict) -> None:
+        progress = lmstudio.download_progress(p)
+        if progress is not None:
+            pct = f" (%{progress * 100:.0f})" if progress >= 0 else ""
+            console.print(f"[yellow]{escape(name)}: modeli LM Studio'da hâlâ iniyor{pct}; inince kullanılabilir.[/]")
+            return
+        console.print(f"[red]{escape(name)}: model diskte yok (silinmiş ya da hiç indirilmemiş).[/]")
+        self._note(f"İndirmek için: {lmstudio.download_hint(p)}")
+
+    @staticmethod
+    def _disk_info(m: dict | None) -> str:
+        if not m:
+            return ""
+        quant = (m.get("quantization") or {}).get("name", "")
+        return f"{m.get('sizeBytes', 0) / 1e9:.1f} GB" + (f" {quant}" if quant else "")
 
     def show_models(self, models: list[dict] | None) -> None:
         if models is None:
             console.print("[red]Sunucuya ulaşılamadı.[/]")
             return
+        cat = self._catalog()
         info = {m["id"]: m for m in models}
+        presets = self.cfg.get("presets", {})
+        missing = {a for a, p in presets.items() if cat is not None and not lmstudio.is_empty_slot(p)
+                   and p.get("_disk") is None and p.get("model") not in info}
         table = Table(box=None, padding=(0, 2))
-        for col in ("", "Model", "Durum", "Bağlam", ""):
+        for col in ("", "Model", "Durum", "Bağlam", "Dosya", ""):
             table.add_column(col)
-        for alias, p in self.cfg.get("presets", {}).items():
-            m = info.get(p.get("model"), {})
+        for alias, p in presets.items():
+            if alias in missing:
+                continue
+            v = lmstudio.vision_of(p)
+            vm = info.get(v["model"], {}) if v else {}
+            sm = info.get(servers.alias(alias), {})
+            m = vm if vm.get("state") == "loaded" else sm or info.get(p.get("model"), {})
             loaded = m.get("state") == "loaded"
             glyph, color, _ = PIECES.get(alias, DEFAULT_PIECE)
-            state = ("[dim]boş yuva[/]" if not p.get("model") else "[green]yüklü[/]" if loaded
-                     else "[dim]yüklü değil[/]" if m else "[red]bulunamadı[/]")
+            state = ("[dim]boş yuva[/]" if lmstudio.is_empty_slot(p) else
+                     ("[green]yüklü · görsel[/]" if m is vm else
+                      f"[green]yüklü · {escape(m.get('_engine') or 'sunucu')}[/]" if m is sm else "[green]yüklü[/]") if loaded
+                     else "[dim]yüklü değil[/]" if m or p.get("_disk") else "[red]bulunamadı[/]")
             table.add_row(
-                "→" if p.get("model") and p["model"] == self.model else "",
+                "→" if self.model and self.model in (p.get("model"), v and v.get("model"), servers.alias(alias)) else "",
                 Text(f"{glyph} {alias}", style=f"bold {color}"), state,
                 str(m.get("loaded_context_length") or "") if loaded else "",
+                f"[dim]{self._disk_info(p.get('_disk'))}{' · görsel var' if v else ''}[/]",
                 f"[dim]{escape(p.get('desc', ''))}[/]",
             )
         console.print(table)
-        self._note("/load <ad> ile yükle · /model <ad> ile yüklü olana geç")
+        if missing:
+            console.print(Text("\n  Diskte yok", style="bold"))
+            gone = Table(box=None, padding=(0, 2), show_header=False)
+            for alias in presets:
+                if alias not in missing:
+                    continue
+                p = presets[alias]
+                glyph, color, _ = PIECES.get(alias, DEFAULT_PIECE)
+                progress = lmstudio.download_progress(p)
+                state = ("[red]silinmiş ya da indirilmemiş[/]" if progress is None
+                         else f"[yellow]iniyor{f' %{progress * 100:.0f}' if progress >= 0 else ''}[/]")
+                gone.add_row("", Text(f"{glyph} {alias}", style=f"bold {color}"), state,
+                             f"[dim]{escape(p.get('file') or p.get('model', ''))}"
+                             + (f" ({p['size_gb']} GB)" if p.get("size_gb") else "") + "[/]")
+            console.print(gone)
+            self._note("İndirme komutunu görmek için: /load <ad> (depo ve dosya adları config.json'da)")
+        extra = lmstudio.unassigned(self.cfg, cat)
+        if extra:
+            console.print(Text("\n  Ayarı olmayan modeller", style="bold"))
+            free = Table(box=None, padding=(0, 2), show_header=False)
+            for m in extra:
+                free.add_row("", m.get("modelKey", ""), f"[dim]{self._disk_info(m)}[/]",
+                             f"[dim]/fit {escape(m.get('modelKey', ''))} ile ayar önerisi al[/]")
+            console.print(free)
+        self._note("/load <ad> ile yükle · /model <ad> ile yüklü olana geç · /fit <ad> belleğe sığar mı")
+
+    def _load_on_server(self, name: str, p: dict) -> None:
+        """Hazır ayarı Gambit'in başlattığı sunucuda (ik_llama.cpp) yükler: önce LM Studio modellerini boşaltır."""
+        glyph, color, _ = PIECES.get(name, DEFAULT_PIECE)
+        engine = p["server"].get("engine") or "llama-server"
+        spinner = Spinner(glyph, color, self.animate)
+        label = f"{name} yükleniyor ({engine})"
+        spinner.set(label, "LM Studio modelleri boşaltılıyor")
+        with Live(spinner, console=console, refresh_per_second=12.5, transient=True):
+            lmstudio.unload_all(self.cfg)
+            self.model, self.ctx = None, None
+            spinner.set(label, "")
+            res = servers.start(self.cfg, name, p, on_tick=lambda avail: spinner.set(
+                label, f"boş RAM {lmstudio.gib(avail)}" if avail is not None else ""))
+        if not res.ok:
+            style = "bold red" if res.guard_tripped else "red"
+            console.print(f"[{style}]{escape(name)} yüklenemedi: {escape(res.message)}[/]")
+            return
+        if self.set_model(name, all_models(self.base_url) or servers.running()):
+            console.print(Text.assemble(("  ✓ ", "green"), (f"{glyph} {name}", f"bold {color}"), " hazır",
+                                        (f" · bağlam {self.ctx}" if self.ctx else "", MUTED),
+                                        (f" · {res.message}", MUTED)))
+
+    def toggle_vision(self, arg: str) -> None:
+        """/vision [aç|kapat]: görsel modu değiştirir ve modeli o moddaki ayarıyla yeniden yükler."""
+        want = {"on": True, "aç": True, "ac": True, "açık": True, "off": False, "kapat": False, "kapalı": False}
+        target = want.get(arg.lower(), not self.vision) if arg else not self.vision
+        name = self.name()
+        p = self.cfg.get("presets", {}).get(name)
+        if target and p and not lmstudio.vision_of(p):
+            console.print(f"[yellow]{escape(name)} modelinin görsel eki yok (diskte mmproj dosyası bulunmuyor).[/]")
+            return
+        self.vision = target
+        if not target:
+            self.pending_images = []
+        if not p:
+            self._note(f"Görsel mod {'açık' if target else 'kapalı'}; /load <ad> ile yükle.")
+            return
+        self.load_preset(name)
+
+    def add_image(self, arg: str) -> None:
+        """/image <dosya>: resmi sonraki mesaja ekler; dosya verilmezse eklenenleri siler."""
+        if not arg:
+            self._note(f"{len(self.pending_images)} resim kaldırıldı." if self.pending_images else
+                       "Kullanım: /image <dosya> (png, jpg, webp, gif, bmp)")
+            self.pending_images = []
+            return
+        if not self.vision:
+            console.print("[yellow]Görsel mod kapalı; önce /vision ile aç (model görsel ekiyle yeniden yüklenir).[/]")
+            return
+        try:
+            part = image_part(arg.strip().strip("'\""))
+        except ValueError as e:
+            console.print(f"[red]{escape(str(e))}[/]")
+            return
+        self.pending_images.append(part)
+        self._note(f"Resim eklendi: {part['_name']} · sonraki mesajla gönderilecek ({len(self.pending_images)} resim)")
 
     def load_preset(self, name: str) -> None:
         presets = self.cfg.get("presets", {})
@@ -1485,37 +1724,171 @@ class Chat:
             console.print(table)
             return
         p = presets[name]
-        if not p.get("model"):
+        if lmstudio.is_empty_slot(p):
             console.print(f"[yellow]{escape(name)} boş bir yuva; önce config.json'da ona bir model ata.[/]")
             return
+        if is_local(self.base_url) and self._catalog() is not None and p.get("_disk") is None:
+            self._missing_note(name, p)  # diğer modelleri boşaltmadan önce: yüklenemeyecek model için onlar gitmesin
+            return
+        v = lmstudio.vision_of(p)
+        if self.vision and not v:
+            self._note(f"{name} modelinin görsel eki yok; metin modunda yükleniyor.", "yellow")
+            self.vision = False
+        if not self.vision and p.get("server") and servers.binary(p):
+            self._load_on_server(name, p)
+            return
+        if p.get("server") and not self.vision:
+            self._note(f"Sunucu programı bulunamadı ({p['server'].get('bin')}); LM Studio ile yükleniyor.", "yellow")
+        key = v["model"] if self.vision else p["model"]
         glyph, color, _ = PIECES.get(name, DEFAULT_PIECE)
+        args = lmstudio.preset_args(p, vision=self.vision)
+        # Gerçek yüklemeyle ölçülmüş ayar (tune_gpu --fit --apply) ya da ayarı sanal modelde olan taş: LM Studio'nun
+        # tahmini görsel ekinin kapatıldığını ve uzman bölmesini bilmediği için onu aşıyor; tahmin denetimi atlanır
+        measured = (v if self.vision else p).get("measured") or p.get("fit") is False
         spinner = Spinner(glyph, color, self.animate)
-        spinner.set(f"{name} yükleniyor", "diğer modeller boşaltılıyor")
+        spinner.set(f"{name} hazırlanıyor", "diğer modeller boşaltılıyor")
         with Live(spinner, console=console, refresh_per_second=12.5, transient=True):
-            ok = self._lms("unload", "--all") and self._lms("load", p["model"], *p.get("args", []), "-y")
-        if not ok:
+            servers.stop_all()  # VRAM'i Gambit'in başlattığı sunucu tutmasın
+            lmstudio.unload_all(self.cfg)
+            self.model, self.ctx = None, None
+            spinner.set(f"{name} hazırlanıyor", "bellek tahmini")
+            vram_budget, ram_budget, _ = lmstudio.budgets(self.cfg)
+            est = None if measured else lmstudio.estimate(self.cfg, key, args)
+            problems = lmstudio.fit_problems(est, vram_budget, ram_budget) if est else []
+            if problems:
+                spinner.set(f"{name} hazırlanıyor", "sığan ayar aranıyor")
+                advice = lmstudio.advise(self.cfg, key, args, vram_budget, ram_budget)
+        if measured:
+            self._note(f"Ölçülmüş ayar: --gpu {lmstudio.get_arg(args, ('--gpu',), '?')}"
+                       + (f" ({measured})" if isinstance(measured, str) else " (sanal modelde)"))
+        if est:
+            self._note(f"Tahmin: GPU {lmstudio.gib(est.gpu)} · RAM {lmstudio.gib(est.ram)}"
+                       + (f" · ayrılabilecek VRAM {lmstudio.gib(vram_budget)}" if vram_budget is not None else "")
+                       + (f", RAM {lmstudio.gib(ram_budget)}" if ram_budget is not None else ""))
+        if problems:
+            for problem in problems:
+                console.print(f"  [yellow]! {escape(problem)}[/]")
+            args = self._choose_fit(args, advice)
+            if args is None:
+                self._note("Yükleme iptal edildi.")
+                return
+        label = f"{name} yükleniyor" + (" (görsel)" if self.vision else "")
+        spinner.set(label, "")
+        with Live(spinner, console=console, refresh_per_second=12.5, transient=True):
+            res = lmstudio.guarded_load(self.cfg, key, args, on_tick=lambda avail: spinner.set(
+                label, f"boş RAM {lmstudio.gib(avail)}" if avail is not None else ""))
+        if not res.ok:
+            style = "bold red" if res.guard_tripped else "red"
+            console.print(f"[{style}]{escape(name)} yüklenemedi: {escape(res.message)}[/]")
+            if res.guard_tripped:
+                self._note(f"Daha az bellek için: /fit {name} (GPU oranı ve bağlam önerisi)")
             return
         models = server_models(self.base_url) or []
         if self.set_model(name, models):
-            console.print(Text.assemble(("  ✓ ", "green"), (f"{glyph} {name}", f"bold {color}"), " hazır",
-                                        (f" · bağlam {self.ctx}" if self.ctx else "", MUTED)))
+            console.print(Text.assemble(("  ✓ ", "green"), (f"{glyph} {name}", f"bold {color}"),
+                                        " hazır" + (" · görsel mod" if self.vision else ""),
+                                        (f" · bağlam {self.ctx}" if self.ctx else "", MUTED),
+                                        (f" · {res.message}" if res.message else "", MUTED)))
+
+    def _choose_fit(self, args: list[str], advice: "lmstudio.Advice | None") -> list[str] | None:
+        """Tahmin belleğe sığmıyorsa ne yapılacağını sorar: önerilen ayar, yine de bu ayar ya da vazgeç."""
+        better = None
+        if advice and advice.fits:
+            better = lmstudio.set_arg(args, ("--gpu",), advice.gpu)
+            if advice.context.isdigit():
+                better = lmstudio.set_arg(better, lmstudio.CONTEXT_FLAGS, advice.context)
+            ctx_note = (f", bağlam {advice.context}" if advice.context != lmstudio.get_arg(args, lmstudio.CONTEXT_FLAGS)
+                        else "")
+            self._note(f"Öneri: --gpu {advice.gpu}{ctx_note} → GPU {lmstudio.gib(advice.est.gpu)} · "
+                       f"RAM {lmstudio.gib(advice.est.ram)}", "cyan")
+        elif advice:
+            self._note("Daha düşük GPU oranı ve 8k bağlamla da sığmıyor; açık uygulamaları kapatmak yer açar.", "yellow")
+        if not self.interactive:
+            return better
+        question = ("[Ö]neriyle yükle / [y]ine de bu ayarla / [v]azgeç " if better
+                    else "Yine de yüklensin mi? RAM bekçisi açık [e/H] ")
+        try:
+            ans = console.input(Text.assemble(("  ? ", "bold yellow"), (question, MUTED))).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            return None
+        if better:
+            return better if ans in ("", "ö", "o", "öneri") else args if ans in ("y", "yine", "e") else None
+        return args if ans in ("e", "evet", "y", "yes") else None
+
+    def fit(self, arg: str) -> None:
+        """/fit <ad|model anahtarı>: yüklemeden bellek tahmini ve bu makineye uygun ayar önerisi."""
+        presets = self.cfg.get("presets", {})
+        if not arg:
+            console.print("[red]Kullanım: /fit <ad>, ör. /fit queen ya da /fit <model anahtarı>[/]")
+            return
+        cat = self._catalog()
+        if cat is None:
+            console.print("[red]Diskteki modeller okunamadı (lms bulunamadı ya da sunucu yerel değil).[/]")
+            return
+        if arg in presets and not lmstudio.is_empty_slot(presets[arg]):
+            p, label = presets[arg], arg
+            if p.get("_disk") is None:
+                self._missing_note(arg, p)
+                return
+            disk, args = p["_disk"], lmstudio.preset_args(p)
+        else:
+            disk = lmstudio.find_on_disk(arg, arg, cat)
+            if not disk:
+                console.print(f"[red]'{escape(arg)}' ne bir hazır ayar ne de diskteki bir model.[/] [dim](/model)[/]")
+                return
+            label, args = disk["modelKey"], lmstudio.preset_args({"context": 16384, "gpu": "max"})
+        key = disk["modelKey"]
+        glyph, color, _ = PIECES.get(label, DEFAULT_PIECE)
+        spinner = Spinner(glyph, color, self.animate)
+        spinner.set(f"{label} hesaplanıyor", "bellek tahmini")
+        with Live(spinner, console=console, refresh_per_second=12.5, transient=True):
+            vram_budget, ram_budget, source = lmstudio.budgets(self.cfg)
+            est = lmstudio.estimate(self.cfg, key, args)
+            advice = lmstudio.advise(self.cfg, key, args, vram_budget, ram_budget) if est else None
+        if not est:
+            console.print("[red]LM Studio bellek tahmini alınamadı (lms load --estimate-only).[/]")
+            return
+        loaded = [m for m in all_models(self.base_url) or [] if m.get("state") == "loaded"]
+        table = Table(show_header=False, box=None, padding=(0, 2))
+        table.add_row(Text(f"{glyph} {label}", style=f"bold {color}"), f"[dim]{escape(self._disk_info(disk))}[/]")
+        table.add_row("Bu ayar", f"--gpu {lmstudio.get_arg(args, ('--gpu',), 'otomatik')} · bağlam "
+                                 f"{lmstudio.get_arg(args, lmstudio.CONTEXT_FLAGS, 'varsayılan')}")
+        problems = lmstudio.fit_problems(est, vram_budget, ram_budget)
+        table.add_row("Tahmin", f"GPU {lmstudio.gib(est.gpu)} · RAM {lmstudio.gib(est.ram)}  "
+                                + ("[yellow]sığmıyor[/]" if problems else "[green]sığıyor[/]"))
+        table.add_row("Ayrılabilecek",
+                      (f"VRAM {lmstudio.gib(vram_budget)} [dim]({source})[/]" if vram_budget is not None
+                       else "VRAM [yellow]ölçülemedi[/] [dim](nvidia-smi çalışmıyor; config'e vram_limit_gb yaz)[/]")
+                      + (f" · RAM {lmstudio.gib(ram_budget)}" if ram_budget is not None else ""))
+        if advice:
+            table.add_row("Öneri", f"--gpu {advice.gpu} · bağlam {advice.context} → GPU {lmstudio.gib(advice.est.gpu)} "
+                                   f"· RAM {lmstudio.gib(advice.est.ram)}  "
+                                   + ("[green]sığıyor[/]" if advice.fits else "[yellow]yine de sığmıyor[/]"))
+        console.print(table)
+        if loaded:
+            self._note("Şu an yüklü model var; boşaltılınca (/unload) daha fazla yer açılır, öneri buna göre değişir.")
+        if label not in presets and advice:
+            snippet = {"model": key, "file": Path(str(disk.get("path", ""))).name,
+                       "quant": (disk.get("quantization") or {}).get("name", ""),
+                       "size_gb": round(disk.get("sizeBytes", 0) / 1e9, 2),
+                       "context": int(advice.context) if advice.context.isdigit() else 16384,
+                       "gpu": float(advice.gpu) if advice.gpu[0].isdigit() else advice.gpu, "desc": ""}
+            self._note("config.json'a hazır ayar olarak eklemek için (\"presets\" içine, bir taş adıyla):")
+            console.print(Syntax(json.dumps(snippet, ensure_ascii=False, indent=2), "json", theme="ansi_dark",
+                                 background_color="default"))
 
     def _lms(self, *args: str) -> bool:
         """lms'i çalıştırır; çıktısı (model kimlikleri içerir) ekrana basılmaz."""
-        lms = lms_path(self.cfg)
-        if not lms:
-            console.print("[red]lms bulunamadı; config.json'daki lms_path ayarını kontrol et.[/]")
-            return False
-        r = subprocess.run([lms, *args], capture_output=True, text=True, encoding="utf-8", errors="replace")
+        r = lmstudio.run(self.cfg, *args)
         if r.returncode != 0:
-            console.print(f"[red]LM Studio işlemi başarısız oldu ({escape(args[0])}, çıkış kodu {r.returncode}). "
-                          "Model dosyası silinmiş ya da bellek yetersiz olabilir.[/]")
+            console.print(f"[red]LM Studio işlemi başarısız oldu ({escape(args[0])}): "
+                          f"{escape((r.stderr or r.stdout).strip()[-200:])}[/]")
         return r.returncode == 0
 
     def _think_state(self) -> str:
-        if self._preset().get("thinking") == "always":
-            return "her zaman"
-        return {"on": "açık", "off": "kapalı", "auto": "otomatik"}[self.think_mode] if self.can_think() else "yok"
+        if self.efforts == ["off"]:
+            return "yok"
+        return self._effort_label(self.effort)
 
     def _tools_state(self) -> str:
         if self.use_tools and not self.tools_on():
@@ -1524,8 +1897,10 @@ class Chat:
 
     def toolbar(self) -> FormattedText:
         glyph, color, _ = self.piece()
-        parts = [f"düşünme {self._think_state()}", f"araçlar {self._tools_state()}",
-                 f"onay {'otomatik' if self.auto else 'sorulur'}"]
+        parts = [f"düşünme {self._think_state()}", f"araçlar {self._tools_state()}"]
+        if self.vision:
+            parts.append("görsel açık" + (f" · {len(self.pending_images)} resim" if self.pending_images else ""))
+        parts.append(f"onay {'otomatik' if self.auto else 'sorulur'}")
         limit = self._context_limit()
         if limit and self.last_tokens is not None:
             parts.append(f"bağlam {_bar(self.last_tokens / limit, 8)} %{self.last_tokens * 100 // limit}")
@@ -1572,8 +1947,9 @@ def banner(chat: Chat) -> None:
         console.print(Text(f"  {glyph} GAMBIT", style=f"bold {color}"))
     name = chat.name() if chat.model else "model yok · /load queen ile yükle"
     info = Text.assemble(("  ", ""), (f"{glyph} {name}", f"bold {color}"))
-    for part in ([f"bağlam {chat.ctx // 1024}k"] if chat.ctx else []) + [
-            f"düşünme {chat._think_state()}", f"araçlar {chat._tools_state()}"]:
+    parts = ([f"bağlam {chat.ctx // 1024}k"] if chat.ctx else []) + [
+        f"düşünme {chat._think_state()}", f"araçlar {chat._tools_state()}"] + (["görsel açık"] if chat.vision else [])
+    for part in parts:
         info.append(f"  ·  {part}", style=MUTED)
     console.print(info)
     console.print(Text(f"  {os.getcwd()}", style=MUTED))
@@ -1625,10 +2001,14 @@ def main() -> int:
     ap.add_argument("--url", help="sunucu adresi (varsayılan: config.json'daki base_url)")
     ap.add_argument("--no-tools", action="store_true", help="araçları kapat, sadece sohbet")
     ap.add_argument("--think", action=argparse.BooleanOptionalAction, default=None,
-                    help="düşünmeyi aç/kapat (varsayılan: config.json'daki thinking)")
-    ap.add_argument("--auto-think", action="store_true",
-                    help="otomatik düşünme: analiz sorularında ve bir komut başarısız olunca açılır")
+                    help="düşünmeyi aç/kapat (varsayılan: config.json'daki effort)")
+    ap.add_argument("--effort", metavar="DÜZEY",
+                    help="düşünme düzeyi: off, on, low, medium, high, xhigh (modelde olmayan düzeyin en yakını seçilir)")
     ap.add_argument("--show-think", action="store_true", help="düşünme metnini ekranda göster")
+    ap.add_argument("--vision", action="store_true",
+                    help="görsel mod: modelin görsel ekli hâlini kullan (yüklemek için sohbette /load ya da /vision)")
+    ap.add_argument("--image", action="append", metavar="DOSYA",
+                    help="tek seferlik soruya resim ekle (birden fazla verilebilir; görsel modu açar)")
     ap.add_argument("--no-anim", action="store_true", help="animasyonları kapat")
     ap.add_argument("-y", "--yes", action="store_true", help="dosya yazma/komut onayı sorma (dikkat!)")
     args = ap.parse_args()
@@ -1639,12 +2019,16 @@ def main() -> int:
     chat = Chat(client, cfg, base_url, args)
 
     models = ensure_server(cfg, base_url)
+    if models is not None:
+        models += servers.running()
     if models is None:
         console.print(f"[red]Sunucuya ulaşılamadı: {escape(base_url)}[/]\nLM Studio'yu aç ya da şunu çalıştır: lms server start")
         return 1
     wanted = args.model or cfg.get("model")
     if wanted:
         chat.set_model(wanted, models)
+        if args.model and chat.model and chat.model.startswith("gambit-") and not chat.on_server():
+            chat.load_preset(chat.name())  # -m ile istenen model Gambit'in sunucusunda: kendi ayarıyla başlatılır
     else:
         # yüklü modellerden araç kullanabilenler önce
         loaded = sorted((m for m in models if m.get("state") == "loaded"),
@@ -1652,6 +2036,12 @@ def main() -> int:
         if loaded:
             chat.set_model(loaded[0]["id"], models)
 
+    for path in args.image or []:
+        try:
+            chat.pending_images.append(image_part(path))
+        except ValueError as e:
+            console.print(f"[red]{escape(str(e))}[/]")
+            return 1
     if args.prompt:
         if not chat.model:
             console.print("[red]Yüklü model yok.[/] Önce CLI'da /load queen ile bir model yükle ya da -m ile belirt.")

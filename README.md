@@ -8,7 +8,7 @@ LM Studio ve yerel büyük dil modelleri (Gemma, Qwen vb.) ile **%100 çevrimdı
 
 - **Tamamen Çevrimdışı ve Gizlilik Odaklı:** İnternet bağlantısı gerektirmez. Verileriniz, dosyalarınız ve komut geçmişiniz bilgisayarınızdan asla dışarı çıkmaz.
 - **Satranç Taşı Rolleri:** Modeller VRAM, bağlam ve hız ihtiyaçlarına göre optimize edilmiş satranç taşları isimleriyle çağrılır (`knight`, `rook`, `queen`, `bishop`, `king`).
-- **Otomatik Düşünme (Auto-Thinking):** Basit işlerde düşünme süresini kapatarak maksimum hız sağlar; analiz sorularında ve hata alan adımlarda düşünmeyi dinamik olarak devreye sokar.
+- **Model Başına Düşünme Düzeyleri:** Her modelin desteklediği düzeyler (kapalı/açık, kademeli modellerde low–xhigh) LM Studio'dan okunur; `/think <düzey>` ya da `--effort` ile seçilir.
 - **Kullanıcı Onaylı Güvenli Araçlar (Tool Calling):** Dosya okuma ve arama işlemleri doğrudan yapılır; dosya yazma, düzenleme (diff gösterimi ile) ve PowerShell komut çalıştırma her zaman kullanıcı onayına tabidir.
 - **31 Görevlik Yerel Model Benchmark'ı:** Python, SQL, PowerShell ve çok adımlı dosya ajan senaryolarında modellerin doğruluğunu, süresini ve token üretimini ölçen test paketi.
 - **Görsel Dashboard & Tablolar:** Sonuçları detaylı radar grafikleri, ısı haritası ve karşılaştırma tablolarıyla sunan HTML panosu.
@@ -21,10 +21,14 @@ LM Studio ve yerel büyük dil modelleri (Gemma, Qwen vb.) ile **%100 çevrimdı
 ```text
 ├── ai-cli/                     # Gambit CLI asistanı
 │   ├── ai.py                   # CLI ana çalışma motoru ve sohbet döngüsü
-│   ├── tools.py                # Modelin kullandığı güvenli PowerShell ve dosya araçları
+│   ├── tools.py                # Modelin kullandığı güvenli kabuk (PowerShell/bash) ve dosya araçları
+│   ├── lmstudio.py             # Model yönetimi: diskteki modeller, bellek tahmini, GPU oranı önerisi, RAM bekçisi
+│   ├── servers.py              # Gambit'in başlattığı llama-server'lar (knight: ik_llama.cpp)
 │   ├── config.json             # Sunucu, model ve satranç profilleri ayarları
 │   ├── config.example.json     # Şablon konfigürasyon dosyası
 │   ├── ai.bat / gambit.bat     # Windows başlatma betikleri
+│   ├── gambit.sh               # Linux başlatma betiği
+│   ├── lmstudio-hub/           # LM Studio sanal modelleri: görsel eki kapalı, düşünme düzeyleri (build.py)
 │   └── requirements.txt        # Python bağımlılıkları (openai, rich, prompt_toolkit)
 ├── benchmark/                  # Yerel modeller için benchmark paketi
 │   ├── bench.py                # Otomatik test ve değerlendirme motoru
@@ -44,13 +48,22 @@ LM Studio ve yerel büyük dil modelleri (Gemma, Qwen vb.) ile **%100 çevrimdı
 ## Hızlı Başlangıç
 
 ### 1. Gereksinimler
-- **İşletim Sistemi:** Windows (PowerShell 7 veya Windows PowerShell)
+- **İşletim Sistemi:** Windows (PowerShell 7 veya Windows PowerShell) ya da Linux (Pop!_OS/Ubuntu, bash)
 - **Python:** Python 3.10 veya üzeri (tercihen Python 3.14)
 - **LM Studio:** [lmstudio.ai](https://lmstudio.ai) kurulu ve yerel sunucusu (`lms`) hazır olmalıdır.
 
 ### 2. Kurulum
 
-#### Seçenek A: Çevrimdışı (İnternetsiz) Kurulum
+#### Linux (Pop!_OS / Ubuntu)
+```bash
+sudo apt install python3-venv
+python3 -m venv ai-cli/.venv
+ai-cli/.venv/bin/pip install -r ai-cli/requirements.txt
+ai-cli/.venv/bin/python ai-cli/lmstudio-hub/build.py --install   # LM Studio sanal modelleri
+ai-cli/gambit.sh                    # ya da: ln -s "$PWD/ai-cli/gambit.sh" ~/.local/bin/gambit
+```
+
+#### Seçenek A: Çevrimdışı (İnternetsiz) Kurulum (Windows)
 Depo içerisindeki hazır `wheels/` paketlerini kullanarak internete bağlanmadan kurulum yapabilirsiniz:
 ```powershell
 python -m venv ai-cli\.venv
@@ -79,21 +92,25 @@ python -m venv ai-cli\.venv
 # Belirli bir satranç modeli profiliyle aç
 .\ai-cli\ai.bat -m knight
 
-# Düşünme modunu belirle
-.\ai-cli\ai.bat --auto-think   # Otomatik düşünme (varsayılan)
-.\ai-cli\ai.bat --no-think     # Düşünmeyi tamamen kapat (yüksek hız)
+# Düşünme düzeyini belirle
+.\ai-cli\ai.bat --no-think       # Düşünme kapalı (varsayılan, en hızlı)
+.\ai-cli\ai.bat --effort medium  # Kademeli düzey (modelde yoksa en yakını)
 .\ai-cli\ai.bat --show-think   # Düşünme sürecini ekranda göster
 ```
 
 ### Model Profilleri
 
-| Profil Adı | Rol ve Açıklama | Hız |
+| Profil Adı | Model | Rol ve Açıklama |
 |---|---|---|
-| `knight` | Hafif, hızlı ve görsel destekli; günlük pratik işler | ~35 tok/s |
-| `rook` | Kod yazma ve araç kullanımında en seri işçi; düşünmeden üretir | ~20 tok/s |
-| `queen` | Varsayılan ana model; her alanda tam puanlı, gerektiğinde düşünür | ~17 tok/s |
-| `bishop` | Uzun kod incelemeleri için; özet ve direkt yanıtlar | ~9 tok/s |
-| `king` | Son çare; zor ve karmaşık problemleri derinlemesine çözer | ~2.5 tok/s |
+| `pawn` | Ornith 1.5 9B sansürsüz | Küçük ve hızlı; kısa, basit işler |
+| `knight` | Inkling 2 Mini sansürsüz | Deneme; düşünme düzeyleri low–xhigh, Bench v2'de karşılaştırılacak |
+| `bishop` | Qwen3.5 9B Defiant Fable sansürsüz | Hafif, hızlı ve görsel destekli; günlük pratik işler |
+| `rook` | Qwen3.6 35B A3B heretic | Sansürsüz; kod ve siber güvenlik, MoE olduğu için hızlı |
+| `queen` | Gemma 4 26B A4B QAT | Varsayılan ana model; her alanda tam puanlı, gerektiğinde düşünür |
+| `king` | Ternary Bonsai 2.5 27B (Qwen3.8 27B, ternary) | Zor işler ve ajan görevleri; düşünme düzeyleri off/medium/xhigh |
+
+Pop!_OS'ta (RTX 3060 6 GB, 16k bağlam) metin modunda pawn 29,8, queen 22,7, rook 15,0, bishop 14,1, knight ~15 (ik_llama.cpp), king 6,2 tok/s; görsel mod ayrı ölçülmüş oranla yüklenir (`/vision`). `/fit <ad>` modelin bu makinede belleğe sığıp sığmadığını hesaplar;
+`/load` yüklemeyi RAM bekçisiyle yapar (ayrıntılar: [ai-cli/README.md](ai-cli/README.md)).
 
 ---
 
@@ -130,7 +147,7 @@ Sonuçları incelemek için `benchmark/dashboard/index.html` dosyasını tarayı
 
 ## Güvenlik ve Araç İzinleri
 
-Gambit CLI dosya yazma (`write_file`), dosya düzenleme (`edit_file`) ve PowerShell komut çalıştırma (`run_command`) öncesinde her zaman kullanıcıdan onay ister:
+Gambit CLI dosya yazma (`write_file`), dosya düzenleme (`edit_file`) ve kabuk komutu çalıştırma (`run_command`; Windows'ta PowerShell, Linux'ta bash) öncesinde her zaman kullanıcıdan onay ister:
 - `e`: Evet (işlemi onayla)
 - `t`: Bu oturum boyunca o araç için tüm işlemleri otomatik onayla
 - `h`: Hayır (işlemi reddet; modele ret nedeni girilebilir)

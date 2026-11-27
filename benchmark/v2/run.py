@@ -1,13 +1,14 @@
 """Gambit Bench v2: yerel modelleri gambit-cli'nin kendi ajan döngüsüyle (ai-cli/ai.py → Chat) zorlu görevlerden geçirir.
 
-  python run.py                         # varsayılan plan: önce düşünme kapalı, sonra otomatik düşünme
-  python run.py --plan queen:off        # tek yapılandırma (hazır ayar:mod), virgülle birden fazla
+  python run.py                         # varsayılan plan: önce düşünme kapalı, sonra açık
+  python run.py --plan queen:off        # tek yapılandırma (hazır ayar:düzey), virgülle birden fazla
+  python run.py --plan knight:low,knight:high   # kademeli düşünme düzeyleri (modelde olmayanın en yakını)
   python run.py --only kod-,sql-        # yalnızca id'si bu öneklerle başlayan görevler
   python run.py --selftest              # notlandırıcıları referans/yanlış çözümlerle sına (model gerekmez)
   python run.py --regrade               # kayıtlı çalıştırmaları güncel notlandırıcılarla yeniden puanla
   python run.py --report                # yalnızca raporu yeniden üret
 
-Her görev gambit'in sistem istemi, araçları (dosya okuma/yazma, PowerShell) ve düşünme modu (off / auto) ile çalışır;
+Her görev gambit'in sistem istemi, araçları (dosya okuma/yazma, kabuk) ve düşünme düzeyi (off, on, low...) ile çalışır;
 gambit'in onay soruları bir güvenlik kuralıyla (yalnızca görev klasörü) otomatik yanıtlanır. Sonuçlar
 results/results.jsonl'e eklenir; yarıda kalan çalıştırma aynı komutla kaldığı yerden sürer."""
 
@@ -44,8 +45,9 @@ import grading  # noqa: E402
 from core import TASKS, Trace  # noqa: E402
 
 RESULTS = HERE / "results"
-DEFAULT_PLAN = "bishop:off,rook:off,queen:off,bishop:auto,queen:auto,king:off"
-MAX_TOKENS = {"off": 8192, "auto": 12288}  # tek model çağrısı başına üst sınır (kaçak üretime karşı)
+DEFAULT_PLAN = "bishop:off,rook:off,queen:off,bishop:on,queen:on,king:off"
+MAX_TOKENS = {"off": 8192, "think": 12288}  # tek model çağrısı başına üst sınır (kaçak üretime karşı)
+# Eski koşulardaki "auto" (otomatik düşünme) modu Gambit'ten kaldırıldı; kayıtları results'ta durur
 SEED = 42
 # Örnekleme ayarları her istekte açıkça gönderilir; yoksa her sunucu kendi varsayılanını kullanır (LM Studio ile
 # llama-server'ınki farklı) ve aynı model iki ortamda farklı davranır. Değerler model dosyasının (GGUF)
@@ -257,8 +259,25 @@ def lms(cfg: dict, *args: str, timeout: float = 600) -> subprocess.CompletedProc
 
 
 def loaded(cfg: dict) -> list[dict] | None:
+    """LM Studio'da yüklü modeller ve Gambit'in başlattığı sunucular (ik_llama.cpp)."""
     models = ai.server_models(cfg["base_url"])
-    return None if models is None else [m for m in models if m.get("state") == "loaded"]
+    if models is None:
+        return None
+    return [m for m in models if m.get("state") == "loaded"] + ai.servers.running()
+
+
+SERVER_CLIENTS: dict[str, OpenAI] = {}
+
+
+def client_for(model_id: str, default: OpenAI) -> OpenAI:
+    """Model Gambit'in başlattığı sunucudaysa ona giden istemci, değilse LM Studio'nunki."""
+    srv = next((m for m in ai.servers.running() if m["id"] == model_id), None)
+    if not srv:
+        return default
+    url = srv["_base_url"]
+    if url not in SERVER_CLIENTS:
+        SERVER_CLIENTS[url] = OpenAI(base_url=url, api_key="gambit", timeout=900, max_retries=0)
+    return SERVER_CLIENTS[url]
 
 
 def ensure_server(cfg: dict) -> bool:
@@ -274,17 +293,28 @@ def ensure_server(cfg: dict) -> bool:
 
 def load_preset(cfg: dict, preset: str) -> tuple[str, int | None]:
     p = cfg["presets"][preset]
+    if p.get("server") and ai.servers.binary(p):  # metin modu Gambit'in sunucusunda (ik_llama.cpp)
+        ensure_server(cfg)
+        lms(cfg, "unload", "--all", timeout=120)
+        res = ai.servers.start(cfg, preset, p)
+        info = next((m for m in ai.servers.running() if m["id"] == ai.servers.alias(preset)), None)
+        if res.ok and info:
+            return info["id"], info.get("loaded_context_length")
+        raise RuntimeError(f"{preset} sunucuda başlatılamadı: {res.message}")
+    ai.servers.stop_all()  # VRAM'i önceki sunucu tutmasın
     last = ""
     for attempt in range(3):
         ensure_server(cfg)
         lms(cfg, "unload", "--all", timeout=120)
         time.sleep(3 + 5 * attempt)
-        r = lms(cfg, "load", p["model"], *p.get("args", []), "-y")
+        res = ai.lmstudio.guarded_load(cfg, p["model"], ai.lmstudio.preset_args(p))  # RAM bekçisiyle
         info = next((m for m in loaded(cfg) or [] if m["id"] == p["model"]), None)
-        if r.returncode == 0 and info:
+        if res.ok and info:
             return info["id"], info.get("loaded_context_length")
-        last = (r.stderr or r.stdout).strip()[-300:]
+        last = res.message
         log(f"    yükleme denemesi {attempt + 1} başarısız: {last}")
+        if res.guard_tripped:
+            break  # bellek yetmiyor; tekrar denemek yalnızca sistemi yeniden zorlar
     raise RuntimeError(f"{preset} yüklenemedi: {last}")
 
 
@@ -330,17 +360,16 @@ def attempt(client, cfg: dict, preset: str, model_id: str, ctx: int | None, mode
     sandbox = RESULTS / "sandboxes" / run_dir(model_id, mode) / task.id
     fresh_dir(sandbox)
     task.setup(sandbox)
-    # Hep düşünen modeller (thinking: "always") kapalı modda da düşünür: otomatik moddaki çıktı payını alır
+    # Hep düşünen modeller (thinking: "always") kapalı modda da düşünür: düşünen koşuların çıktı payını alır
     always = cfg["presets"].get(preset, {}).get("thinking") == "always"
-    extra = {"max_tokens": MAX_TOKENS["auto" if always else mode], "seed": SEED}
+    extra = {"max_tokens": MAX_TOKENS["off" if mode == "off" and not always else "think"], "seed": SEED}
     if not SERVER_SAMPLING:
         sp = SAMPLING.get(model_id, QWEN_SAMPLING)
         extra.update(temperature=sp["temperature"], top_p=sp["top_p"],
                      extra_body={"top_k": sp["top_k"], "min_p": 0.0, "repeat_penalty": 1.0})
     completions = _Completions(client.chat.completions, extra)
     capped = types.SimpleNamespace(chat=types.SimpleNamespace(completions=completions))
-    args = argparse.Namespace(no_tools=not task.tools, think=False if mode == "off" else None, show_think=False,
-                              yes=False, auto_think=mode == "auto")
+    args = argparse.Namespace(no_tools=not task.tools, think=None, effort=mode, show_think=False, yes=False)
     buf = io.StringIO()
     ai.console = Console(file=buf, width=150, force_terminal=False, color_system=None, highlight=False, soft_wrap=True)
     previous = os.getcwd()
@@ -352,6 +381,8 @@ def attempt(client, cfg: dict, preset: str, model_id: str, ctx: int | None, mode
                            deadline=started + (NO_LIMIT_CAP if NO_LIMIT else BUDGET[task.tools]))
         completions.bench = chat
         chat.model, chat.ctx = model_id, ctx
+        chat.reasoning = {} if REMOTE else ai.lmstudio.reasoning_options(cfg["base_url"])
+        chat.refresh_efforts()  # modelin düzeyleri: modelde olmayan düzeyin en yakını
         chat.messages[0]["content"] = chat.system_prompt()  # gerçek CLI'daki gibi: mod adı (knight, queen...) istemde
         try:
             chat.ask(task.prompt)
@@ -372,7 +403,7 @@ def attempt(client, cfg: dict, preset: str, model_id: str, ctx: int | None, mode
         notes.append(f"çökme: {crash[:120]}")
     if chat.blocked:
         notes.append("engellenen: " + " | ".join(b[:60] for b in chat.blocked[:2]))
-    if mode == "auto" and chat.think_calls:
+    if mode != "off" and chat.think_calls:
         notes.append(f"düşünme {chat.think_calls}/{chat.calls} adımda açık")
     result = {
         "preset": preset, "model_id": model_id, "mode": mode, "task": task.id, "category": task.category,
@@ -478,7 +509,7 @@ def run_plan(plan: list[tuple[str, str]], tasks: list[core.Task]) -> int:
                 try:
                     t0 = time.perf_counter()
                     if REMOTE:  # uzakta tek model zaten yüklü; kayıtlar yerel koşularla eşleşsin diye aynı kimlik
-                        pargs = cfg["presets"][preset].get("args", [])
+                        pargs = ai.lmstudio.preset_args(cfg["presets"][preset])
                         model_id = cfg["presets"][preset]["model"]
                         ctx = int(pargs[pargs.index("-c") + 1]) if "-c" in pargs else None
                     else:
@@ -491,9 +522,10 @@ def run_plan(plan: list[tuple[str, str]], tasks: list[core.Task]) -> int:
                                                              "reason": str(e)[:300]})
                     current = None
                     continue
-            thinking = supports_thinking(client, model_id) and cfg["presets"][preset].get("thinking", True)
-            if mode == "auto" and not thinking:
-                log(f"--- {preset}/auto atlandı: model düşünmeyi desteklemiyor")
+            thinking = supports_thinking(client_for(model_id, client), model_id) and cfg["presets"][preset].get(
+                "thinking", True)
+            if mode != "off" and not thinking:
+                log(f"--- {preset}/{mode} atlandı: model düşünmeyi desteklemiyor")
                 continue
             append_jsonl(RESULTS / "configs.jsonl", {"preset": preset, "model_id": model_id, "mode": mode, "ctx": ctx,
                                                      "thinking_supported": thinking, "status": "başladı",
@@ -504,7 +536,7 @@ def run_plan(plan: list[tuple[str, str]], tasks: list[core.Task]) -> int:
                 write_status(yapilandirma=f"{preset}/{mode}", sira=f"{ci}/{len(plan)}", gorev=task.id,
                              ilerleme=f"{i}/{len(todo)}", baslangic=datetime.now().isoformat(timespec="seconds"))
                 try:
-                    r = run_task(client, cfg, preset, model_id, ctx, mode, task)
+                    r = run_task(client_for(model_id, client), cfg, preset, model_id, ctx, mode, task)
                 except Exception as e:  # çalıştırıcının kendisinde beklenmeyen hata: görevi sıfırla, devam et
                     log(f"    beklenmeyen hata: {type(e).__name__}: {e}")
                     r = {"preset": preset, "model_id": model_id, "mode": mode, "task": task.id, "category": task.category,
@@ -528,6 +560,7 @@ def run_plan(plan: list[tuple[str, str]], tasks: list[core.Task]) -> int:
         if not REMOTE:
             log("\nLM Studio'daki modeller boşaltılıyor…")
             lms(cfg, "unload", "--all", timeout=120)
+            ai.servers.stop_all()
         build_report()
         write_status(yapilandirma="bitti" if completed else "durdu",
                      toplam_dk=round((time.perf_counter() - total_started) / 60, 1))
@@ -584,7 +617,7 @@ def regrade() -> int:
     by_id = {t.id: t for t in TASKS}
     path = RESULTS / "results.jsonl"
     results = load_jsonl(path)
-    changed = 0
+    changed = skipped = 0
     for r in results:
         t = by_id.get(r["task"])
         if not t:
@@ -598,8 +631,16 @@ def regrade() -> int:
         else:
             continue
         sandbox = RESULTS / "sandboxes" / folder / t.id
+        if t.tools and not sandbox.is_dir():
+            # Görev klasörü bu makinede yok (ör. Windows koşuları, sandboxes git'te değil): dosyaya bakan notlandırıcı
+            # "dosya yok" deyip puanı sıfırlardı; kayıt olduğu gibi kalır
+            skipped += 1
+            continue
         score, detail, items = grade_safely(t, sandbox, data.get("final", ""), Trace(events=data.get("events", []),
                                                                                        final=data.get("final", "")))
+        if detail.startswith("notlandırıcı hatası"):
+            skipped += 1  # notlandırıcı bu makinede çalışamadı (ör. node kurulu değil): eski puan korunur
+            continue
         if abs(round(score, 4) - r["score"]) > 1e-6:
             changed += 1
             log(f"{r['preset']}/{r['mode']} {t.id}: {100 * r['score']:.1f} → {100 * score:.1f}  {detail[:100]}")
@@ -607,7 +648,8 @@ def regrade() -> int:
     tmp = path.with_suffix(".tmp")
     tmp.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in results), encoding="utf-8")
     tmp.replace(path)
-    log(f"{len(results)} sonuç tarandı, {changed} puan değişti")
+    log(f"{len(results)} sonuç tarandı, {changed} puan değişti"
+        + (f", {skipped} kayıt atlandı (görev klasörü yok ya da notlandırıcı çalışamadı)" if skipped else ""))
     build_report()
     return 0
 
@@ -615,7 +657,8 @@ def regrade() -> int:
 def main() -> int:
     global RESULTS, NO_LIMIT, REMOTE, SEED, SERVER_SAMPLING
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--plan", default=DEFAULT_PLAN, help="hazır_ayar:mod listesi (mod: off | auto)")
+    ap.add_argument("--plan", default=DEFAULT_PLAN,
+                    help="hazır_ayar:düzey listesi (düzey: off, on, low, medium, high, xhigh)")
     ap.add_argument("--only", default="", help="yalnızca id'si bu öneklerle başlayan görevler (virgülle)")
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("--regrade", action="store_true")
@@ -645,7 +688,10 @@ def main() -> int:
     plan = []
     for item in args.plan.split(","):
         preset, _, mode = item.strip().partition(":")
-        if mode not in MAX_TOKENS:
+        if mode == "auto":
+            log(f"{item}: otomatik düşünme modu kaldırıldı; off, on ya da bir düzey (low, medium, high, xhigh) yaz")
+            return 1
+        if mode not in ("off", "on", *ai.lmstudio.API_EFFORTS):
             log(f"geçersiz plan öğesi: {item}")
             return 1
         plan.append((preset, mode))

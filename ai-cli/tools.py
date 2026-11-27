@@ -118,6 +118,9 @@ def _numbered(lines: list[str], start: int) -> str:
 
 def _find_shell() -> tuple[list[str], str]:
     if os.name != "nt":
+        # Modeller kabuk komutlarını çoğunlukla bash sözdizimiyle yazıyor; Ubuntu/Pop!_OS'ta /bin/sh ise dash
+        if path := shutil.which("bash"):
+            return [path, "-c"], "bash"
         return ["/bin/sh", "-c"], "sh"
     for exe, name in (("pwsh", "PowerShell 7"), ("powershell", "Windows PowerShell 5.1")):
         if path := shutil.which(exe):
@@ -150,14 +153,19 @@ def _python_exe() -> str:
 
 def environment() -> tuple[list[str], list[str]]:
     """Komut satırından kullanılabilen ve kurulu olmayan yaygın programlar."""
-    def found(name: str) -> bool:
+    def found(name: str) -> str | None:
+        """Programın komut satırındaki adı. Python için gerçekten çalışan ad: Ubuntu/Pop!_OS'ta yalnızca python3 var,
+        modele "python" denirse "python: command not found" alıyor."""
         if name == "python":
-            return any((p := shutil.which(n)) and "WindowsApps" not in p for n in ("python", "python3", "py"))
-        return bool(shutil.which(name))
+            return next((n for n in ("python", "python3", "py") if (p := shutil.which(n)) and "WindowsApps" not in p),
+                        None)
+        return name if shutil.which(name) else None
 
-    names = ["python", "node", "npm", "git", "sqlite3"]
-    have = [n for n in names if found(n)]
-    return have, [n for n in names if n not in have]
+    have, missing = [], []
+    for name in ("python", "node", "npm", "git", "sqlite3"):
+        real = found(name)
+        (have if real else missing).append(real or name)
+    return have, missing
 
 
 def _kill_tree(p: subprocess.Popen) -> None:

@@ -1,16 +1,20 @@
-"""Terminal: model işi gambit'in run_command aracıyla (PowerShell) kendisi yapar; puan klasörün son durumundan
+"""Terminal: model işi gambit'in run_command aracıyla (PowerShell ya da bash) kendisi yapar; puan klasörün son durumundan
 verilir. Her dosya/satır ayrı bir rubrik maddesidir; yarım iş yarım puan alır."""
 
 import csv
 import hashlib
 import io
+import os
 import re
 from pathlib import Path
 
 from core import Rubric, code, locate, read, task, write
 
-TERM_NOTE = ("Windows'ta PowerShell 7 kullanıyorum; bulunduğun klasörde çalış. İşi araçlarınla (run_command, gerekirse "
-             "küçük bir betik) kendin yap, sonra sonucu kontrol et. Bu klasörün dışına dokunma.")
+# Kabuk gambit'in run_command aracınınkiyle aynı (Windows: PowerShell, Linux: bash); Linux koşuları bu yüzden Windows
+# koşularıyla birebir aynı istemi görmez
+TERM_NOTE = (("Windows'ta PowerShell 7 kullanıyorum" if os.name == "nt" else "Linux'ta bash kullanıyorum")
+             + "; bulunduğun klasörde çalış. İşi araçlarınla (run_command, gerekirse küçük bir betik) kendin yap, sonra "
+             "sonucu kontrol et. Bu klasörün dışına dokunma.")
 
 # ---------------------------------------------------------------- log raporu
 

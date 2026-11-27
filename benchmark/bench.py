@@ -36,7 +36,7 @@ from tasks import CATEGORIES, TASKS, Task, make_sql_db  # noqa: E402
 RESULTS = HERE / "results"
 RESULTS_FILE = RESULTS / "results.jsonl"
 CONFIGS_FILE = RESULTS / "configs.jsonl"
-MAX_TOKENS = {"off": 3072, "on": 8192, "auto": 8192}  # auto: CLI'ın otomatik düşünme modu
+MAX_TOKENS = {"off": 3072, "on": 8192}
 SEED = 42
 AGENT_MAX_STEPS = 12
 AGENT_TIME_BUDGET = 900  # saniye; aşıldıktan sonra yeni model çağrısı yapılmaz
@@ -131,7 +131,7 @@ def ask_once(client: OpenAI, model: str, mode: str, prompt: str, thinking_suppor
         "max_tokens": MAX_TOKENS[mode], "seed": SEED,
     }
     if think is None:
-        think = mode == "on" or (mode == "auto" and ai.analysis_question(prompt))
+        think = mode == "on"
     if thinking_supported and not think:
         kwargs["reasoning_effort"] = "none"
     start = time.perf_counter()
@@ -230,8 +230,7 @@ def run_agent(client: OpenAI, cfg: dict, model: str, ctx: int | None, mode: str,
     task.setup(sandbox)
     extra = {"max_tokens": MAX_TOKENS[mode], "seed": SEED}
     capped = types.SimpleNamespace(chat=types.SimpleNamespace(completions=CappedCompletions(client.chat.completions, extra)))
-    args = argparse.Namespace(no_tools=False, think=mode == "on" or not thinking_supported, show_think=False, yes=False,
-                              auto_think=mode == "auto" and thinking_supported)
+    args = argparse.Namespace(no_tools=False, think=mode == "on" or not thinking_supported, show_think=False, yes=False)
     previous = os.getcwd()
     os.chdir(sandbox)
     try:
@@ -244,8 +243,6 @@ def run_agent(client: OpenAI, cfg: dict, model: str, ctx: int | None, mode: str,
         os.chdir(previous)
     final = next((m.get("content") or "" for m in reversed(chat.messages) if m["role"] == "assistant"), "")
     score, detail = task.check(sandbox, final)
-    if chat.escalations:
-        detail += "; komut başarısız olunca düşünme otomatik açıldı"
     if chat.timed_out:
         detail += "; süre sınırına ulaşıldı"
     if chat.blocked:
@@ -272,13 +269,11 @@ def save_response(key: str, mode: str, task: Task, result: dict, extra: dict) ->
 
 def retry_with_feedback(client: OpenAI, model: str, mode: str, task: Task, sandbox: Path, thinking_supported: bool,
                         first: dict, result: dict, extra: dict) -> None:
-    """CLI'daki gibi: komut/sorgu hata verince hata modele gösterilir ve bir kez daha dener. Otomatik modda,
-    CLI'daki kuralla aynı şekilde, hata bir başarısızlıksa (sıfır olmayan çıkış kodu, SQL hatası) düşünme açılır."""
+    """CLI'daki gibi: komut/sorgu hata verince hata modele gösterilir ve bir kez daha dener."""
     what = "komut" if task.kind == "shell" else "sorgu"
     feedback = (f"Bu {what} çalıştırılınca şu sonuç alındı:\n```\n{LAST_EXEC['error']}\n```\n"
                 f"Hatayı düzelt ve düzeltilmiş {what}u ilk istekteki biçimde ver.")
-    escalate = mode == "auto" and LAST_EXEC.get("failed", False)
-    think = mode == "on" or escalate
+    think = mode == "on"
     history = [{"role": "assistant", "content": first["content"] or first["answer"]}, {"role": "user", "content": feedback}]
     second = ask_once(client, model, mode, task.prompt, thinking_supported, history=history, think=think)
     score, detail, extracted = grade_answer(task, second["answer"], sandbox)
@@ -353,7 +348,7 @@ def load_preset(cfg: dict, key: str) -> tuple[str, int | None, float]:
     preset = cfg["presets"][key]
     start = time.perf_counter()
     lms(cfg, "unload", "--all")
-    r = lms(cfg, "load", preset["model"], *preset.get("args", []))
+    r = lms(cfg, "load", preset["model"], *ai.lmstudio.preset_args(preset))
     loaded = loaded_models(cfg)
     info = next((m for m in loaded if m["id"] == preset["model"]), None)
     if r.returncode != 0 or not info:
@@ -365,7 +360,7 @@ def restore(cfg: dict, model_ids: list[str]) -> None:
     lms(cfg, "unload", "--all")
     for model_id in model_ids:
         preset = next((p for p in cfg["presets"].values() if p["model"] == model_id), None)
-        lms(cfg, "load", model_id, *(preset.get("args", []) if preset else []))
+        lms(cfg, "load", model_id, *(ai.lmstudio.preset_args(preset) if preset else []))
 
 
 def keep_awake() -> None:
